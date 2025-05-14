@@ -45,12 +45,7 @@ const DelCourses = async (req, res) => {
     }
 
     await Courses.findOneAndDelete({ _id });
-    const response = GenRes(
-      200,
-      null,
-      null,
-      "Deleted Successfully!"
-    );
+    const response = GenRes(200, null, null, "Deleted Successfully!");
 
     return res.status(200).json(response);
   } catch (error) {

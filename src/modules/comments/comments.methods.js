@@ -2,6 +2,8 @@ const { isValidObjectId } = require("mongoose");
 const GenRes = require("../../utils/routers/GenRes");
 const User = require("../user/user.model");
 const Comment = require("./comments.model");
+const Content = require("../contents/contents.model");
+const Notification = require("../notifications/notification.model");
 const { CleanUpAfterDeleteComment } = require("./comments.cleanup");
 
 // Add Comment
@@ -46,6 +48,11 @@ const AddComment = async (req, res) => {
       return res.status(401).json(response);
     }
 
+    const content = await Content.findById(uid);
+    if (!content) {
+      throw new Error("Content not found!");
+    }
+
     const newData = new Comment({
       type,
       uid,
@@ -55,6 +62,35 @@ const AddComment = async (req, res) => {
     });
 
     await newData.save();
+
+    // Create notification for content author
+    const notification = new Notification({
+      recipient: {
+        _id: content.author._id,
+        email: content.author.email,
+      },
+      sender: {
+        _id: user._id,
+        email: user.email,
+        name: user.name,
+        picture: user.picture,
+      },
+      type: "comment",
+      content: `${user.name} commented on your ${type}`,
+      metadata: {
+        itemId: uid,
+        itemType: type,
+        commentId: newData._id.toString(),
+      },
+    });
+
+    await notification.save();
+
+    // Emit notification to online user
+    const io = req.app.get("io");
+    if (io) {
+      io.to(content.author._id).emit("new_notification", notification);
+    }
 
     const response = GenRes(200, newData, null, "Uploaded Successfully!");
     return res.status(200).json(response);

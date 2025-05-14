@@ -2,6 +2,7 @@ const { Server } = require("socket.io");
 const ChatMessage = require("../../modules/chat/chat.model");
 const User = require("../../modules/user/user.model");
 const Follow = require("../../modules/follow/follow.model");
+const Notification = require("../../modules/notifications/notification.model");
 const jwt = require("jsonwebtoken");
 
 const setupSocketHandlers = (server) => {
@@ -97,6 +98,28 @@ const setupSocketHandlers = (server) => {
 
         await newMessage.save();
 
+        // Create notification
+        const notification = new Notification({
+          recipient: {
+            _id: receiver._id,
+            email: receiver.email,
+          },
+          sender: {
+            _id: socket.user._id,
+            email: socket.user.email,
+            name: socket.user.name,
+            picture: socket.user.picture,
+          },
+          type: "message",
+          content: `${socket.user.name} sent you a message`,
+          metadata: {
+            itemId: newMessage._id.toString(),
+            itemType: "message",
+          },
+        });
+
+        await notification.save();
+
         // Get receiver's socket if they're online
         const receiverSocketId = onlineUsers.get(receiver.email);
 
@@ -106,6 +129,7 @@ const setupSocketHandlers = (server) => {
             ...newMessage.toObject(),
             message: newMessage.decryptMessage(),
           });
+          io.to(receiverSocketId).emit("new_notification", notification);
         }
 
         // Send delivery confirmation to sender

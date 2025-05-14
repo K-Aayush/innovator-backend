@@ -3,6 +3,7 @@ const GenRes = require("../../utils/routers/GenRes");
 const Like = require("./likes.model");
 const User = require("../user/user.model");
 const Content = require("../contents/contents.model");
+const Notification = require("../notifications/notification.model");
 
 const LikeHandler = async (req, res) => {
   try {
@@ -60,6 +61,34 @@ const LikeHandler = async (req, res) => {
           user: getUser.toObject(),
         });
         await newLike.save();
+
+        // Create notification for content author
+        const notification = new Notification({
+          recipient: {
+            _id: contentExist.author._id,
+            email: contentExist.author.email,
+          },
+          sender: {
+            _id: getUser._id,
+            email: getUser.email,
+            name: getUser.name,
+            picture: getUser.picture,
+          },
+          type: "like",
+          content: `${getUser.name} liked your ${type}`,
+          metadata: {
+            itemId: uid,
+            itemType: type,
+          },
+        });
+
+        await notification.save();
+
+        // Emit notification to online user
+        const io = req.app.get("io");
+        if (io) {
+          io.to(contentExist.author._id).emit("new_notification", notification);
+        }
       }
     }
 
@@ -70,7 +99,6 @@ const LikeHandler = async (req, res) => {
       "Like/Unlike operation completed!"
     );
     return res.status(200).json(response);
-
   } catch (error) {
     const response = GenRes(
       500,

@@ -2,6 +2,7 @@ const path = require("path");
 const GenRes = require("../../utils/routers/GenRes");
 const User = require("../user/user.model");
 const Content = require("./contents.model");
+const Notification = require("../notifications/notification.model");
 const fs = require("fs");
 const { CleanUpAfterDeleteContent } = require("./contents.cleanup");
 const transporter = require("../../config/Mailer");
@@ -37,6 +38,43 @@ const AddContent = async (req, res) => {
     const newData = new Content({ ...data, author: author });
     await newData.save();
 
+    // Create notification for followers
+    const followers = await Follow.find({ "following.email": author.email });
+
+    const notifications = followers.map((follower) => ({
+      recipient: {
+        _id: follower.follower._id,
+        email: follower.follower.email,
+      },
+      sender: {
+        _id: author._id,
+        email: author.email,
+        name: author.name,
+        picture: author.picture,
+      },
+      type: "content",
+      content: `${author.name} shared a new post`,
+      metadata: {
+        itemId: newData._id.toString(),
+        itemType: "content",
+      },
+    }));
+
+    if (notifications.length > 0) {
+      await Notification.insertMany(notifications);
+
+      // Emit notifications to online users
+      const io = req.app.get("io");
+      if (io) {
+        notifications.forEach((notification) => {
+          io.to(notification.recipient._id).emit(
+            "new_notification",
+            notification
+          );
+        });
+      }
+    }
+
     const response = GenRes(
       200,
       newData.toObject(),
@@ -49,6 +87,7 @@ const AddContent = async (req, res) => {
     return res.status(500).json(response);
   }
 };
+
 const UpdateContents = async (req, res) => {
   try {
     const data = req?.body;
@@ -122,13 +161,13 @@ const DeleteContent = async (req, res) => {
             <h2 style="color: #ff6f00;">⚠️ Content Removal Notice</h2>
             <p style="font-size: 16px; color: #333;">Hi there,</p>
             <p style="font-size: 15px; color: #555;">
-              We’ve removed certain content from your account because it violates our community guidelines on <strong>Innovator</strong>.
+              We've removed certain content from your account because it violates our community guidelines on <strong>Innovator</strong>.
             </p>
             <div style="padding: 15px; background-color: #fff3e0; border-left: 5px solid #ff9800; margin: 20px 0;">
               <p style="margin: 0; color: #444;">${req?.body?.message}</p>
             </div>
             <p style="font-size: 15px; color: #555;">
-              If you believe this was in error or need further assistance, please don’t hesitate to contact our support team.
+              If you believe this was in error or need further assistance, please don't hesitate to contact our support team.
             </p>
             <p style="font-size: 15px; color: #333;">
               Thank you for helping us maintain a positive and respectful community.<br/>

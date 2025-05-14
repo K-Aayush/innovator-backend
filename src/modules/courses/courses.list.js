@@ -2,7 +2,7 @@ const GenRes = require("../../utils/routers/GenRes");
 const Follow = require("../follow/follow.model");
 const Likes = require("../likes/likes.model");
 const Comments = require("../comments/comments.model");
-const Content = require("./contents.model");
+const Content = require("../contents/contents.model");
 
 function shuffleArray(array) {
   // Fisher-Yates Shuffle
@@ -18,7 +18,7 @@ const ListContents = async (req, res) => {
     const queries = req?.query;
     const page = parseInt(req?.params?.page || "0") || 0;
     const pageSize = 10;
-    const lastId = req.query.lastId; 
+    const lastId = req.query.lastId;
 
     const filters = {};
     const authenQuery = "email,name,search".split(",");

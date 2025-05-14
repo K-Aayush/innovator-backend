@@ -2,6 +2,7 @@ const GenRes = require("../../utils/routers/GenRes");
 const User = require("../user/user.model");
 const Follow = require("./follow.model");
 const { isValidObjectId } = require("mongoose");
+const ChatMessage = require("../chat/chat.model");
 
 const UpdateFollow = async (req, res) => {
   try {
@@ -56,6 +57,32 @@ const UpdateFollow = async (req, res) => {
         following: following?.toObject(),
       });
       await newFollow.save();
+
+      // Check if mutual follow exists
+      const mutualFollow = await Follow.findOne({
+        "follower.email": followemail,
+        "following.email": useremail,
+      });
+
+      if (mutualFollow) {
+        // Create empty chat message to initialize chat
+        const initMessage = new ChatMessage({
+          sender: follower.toObject(),
+          receiver: following.toObject(),
+          message: "",
+          read: true,
+          deletedBySender: true,
+          deletedByReceiver: true,
+        });
+        await initMessage.save();
+
+        // Emit chat list update to both users
+        const io = req.app.get("io");
+        if (io) {
+          io.to(follower._id.toString()).emit("refresh_chat_list");
+          io.to(following._id.toString()).emit("refresh_chat_list");
+        }
+      }
     }
 
     const response = GenRes(

@@ -20,13 +20,25 @@ const NotificationSchema = new Schema(
     }),
     content: gen.required(String),
     read: gen.required(Boolean, { default: false }),
+    readAt: Date,
     metadata: {
       itemId: String,
       itemType: String,
       additionalInfo: Schema.Types.Mixed,
     },
+    priority: {
+      type: String,
+      enum: ["low", "medium", "high"],
+      default: "medium",
+    },
   },
-  { timestamps: true }
+  {
+    timestamps: true,
+    index: [
+      { "recipient._id": 1, createdAt: -1 },
+      { "recipient._id": 1, read: 1 },
+    ],
+  }
 );
 
 const Notification =

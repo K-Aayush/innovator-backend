@@ -26,6 +26,8 @@ const LikeHandler = async (req, res) => {
       throw new Error("User not found!");
     }
 
+    const notifications = [];
+
     for (const data of body) {
       const { uid, type } = data;
 
@@ -62,7 +64,7 @@ const LikeHandler = async (req, res) => {
         });
         await newLike.save();
 
-        // Create notification for content author
+        // Create notification object
         const notification = new Notification({
           recipient: {
             _id: contentExist.author._id,
@@ -76,20 +78,42 @@ const LikeHandler = async (req, res) => {
           },
           type: "like",
           content: `${getUser.name} liked your ${type}`,
+          priority: "medium",
           metadata: {
             itemId: uid,
             itemType: type,
+            contentTitle: contentExist.title || "content",
           },
         });
 
+        // Save notification
         await notification.save();
-
-        // Emit notification to online user
-        const io = req.app.get("io");
-        if (io) {
-          io.to(contentExist.author._id).emit("new_notification", notification);
-        }
+        notifications.push(notification);
       }
+    }
+
+    // Handle real-time notifications after all operations are complete
+    const io = req.app.get("io");
+    if (io && notifications.length > 0) {
+      // Group notifications by recipient
+      const notificationsByRecipient = notifications.reduce(
+        (acc, notification) => {
+          const recipientId = notification.recipient._id;
+          if (!acc[recipientId]) {
+            acc[recipientId] = [];
+          }
+          acc[recipientId].push(notification);
+          return acc;
+        },
+        {}
+      );
+
+      // Send notifications to each recipient
+      Object.entries(notificationsByRecipient).forEach(
+        ([recipientId, recipientNotifications]) => {
+          io.to(recipientId).emit("new_notifications", recipientNotifications);
+        }
+      );
     }
 
     const response = GenRes(

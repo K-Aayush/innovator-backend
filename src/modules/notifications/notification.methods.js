@@ -5,29 +5,44 @@ const GetNotifications = async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 0;
     const limit = 20;
+    const lastId = req.query.lastId;
 
-    const notifications = await Notification.find({
-      "recipient._id": req.user._id,
-    })
+    // Base query
+    const query = { "recipient._id": req.user._id };
+
+    // Add cursor-based pagination
+    if (lastId) {
+      query._id = { $lt: lastId };
+    }
+
+    // Get notifications with pagination
+    const notifications = await Notification.find(query)
       .sort({ createdAt: -1 })
       .skip(page * limit)
-      .limit(limit);
+      .limit(limit + 1);
 
+    const hasMore = notifications.length > limit;
+    const results = hasMore ? notifications.slice(0, -1) : notifications;
+
+    // Get unread count
     const unreadCount = await Notification.countDocuments({
       "recipient._id": req.user._id,
       read: false,
     });
 
-    return res
-      .status(200)
-      .json(
-        GenRes(
-          200,
-          { notifications, unreadCount },
-          null,
-          "Notifications retrieved"
-        )
-      );
+    return res.status(200).json(
+      GenRes(
+        200,
+        {
+          notifications: results,
+          unreadCount,
+          hasMore,
+          nextCursor: hasMore ? results[results.length - 1]._id : null,
+        },
+        null,
+        "Notifications retrieved"
+      )
+    );
   } catch (error) {
     return res.status(500).json(GenRes(500, null, error, error.message));
   }
@@ -50,17 +65,29 @@ const MarkAsRead = async (req, res) => {
         );
     }
 
-    await Notification.updateMany(
+    const updatedNotifications = await Notification.updateMany(
       {
         _id: { $in: notificationIds },
         "recipient._id": req.user._id,
       },
-      { $set: { read: true } }
+      {
+        $set: {
+          read: true,
+          readAt: new Date(),
+        },
+      }
     );
 
     return res
       .status(200)
-      .json(GenRes(200, null, null, "Notifications marked as read"));
+      .json(
+        GenRes(
+          200,
+          { modifiedCount: updatedNotifications.modifiedCount },
+          null,
+          "Notifications marked as read"
+        )
+      );
   } catch (error) {
     return res.status(500).json(GenRes(500, null, error, error.message));
   }
@@ -68,17 +95,29 @@ const MarkAsRead = async (req, res) => {
 
 const MarkAllAsRead = async (req, res) => {
   try {
-    await Notification.updateMany(
+    const result = await Notification.updateMany(
       {
         "recipient._id": req.user._id,
         read: false,
       },
-      { $set: { read: true } }
+      {
+        $set: {
+          read: true,
+          readAt: new Date(),
+        },
+      }
     );
 
     return res
       .status(200)
-      .json(GenRes(200, null, null, "All notifications marked as read"));
+      .json(
+        GenRes(
+          200,
+          { modifiedCount: result.modifiedCount },
+          null,
+          "All notifications marked as read"
+        )
+      );
   } catch (error) {
     return res.status(500).json(GenRes(500, null, error, error.message));
   }
@@ -103,7 +142,7 @@ const DeleteNotification = async (req, res) => {
 
     return res
       .status(200)
-      .json(GenRes(200, null, null, "Notification deleted"));
+      .json(GenRes(200, deleted, null, "Notification deleted"));
   } catch (error) {
     return res.status(500).json(GenRes(500, null, error, error.message));
   }

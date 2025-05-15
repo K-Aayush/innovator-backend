@@ -116,75 +116,63 @@ const GetChats = async (req, res) => {
       "follower"
     );
 
-    const mutualEmails = following
-      .map((f) => f.following.email)
-      .filter((email) => followers.some((f) => f.follower.email === email));
+    const mutualFollowers = followers.filter((follower) =>
+      following.some((f) => f.following.email === follower.follower.email)
+    );
 
     // Get latest chat message from each conversation
-    const chats = await ChatMessage.aggregate([
-      {
-        $match: {
+    const chats = await Promise.all(
+      mutualFollowers.map(async (mutual) => {
+        const otherUser = mutual.follower;
+        const lastMessage = await ChatMessage.findOne({
           $or: [
             {
               "sender._id": userId,
+              "receiver._id": otherUser._id,
               deletedBySender: false,
-              "receiver.email": { $in: mutualEmails },
             },
             {
+              "sender._id": otherUser._id,
               "receiver._id": userId,
               deletedByReceiver: false,
-              "sender.email": { $in: mutualEmails },
             },
           ],
-        },
-      },
-      {
-        $sort: { createdAt: -1 },
-      },
-      {
-        $group: {
-          _id: {
-            $cond: [
-              { $eq: ["$sender._id", userId] },
-              "$receiver._id",
-              "$sender._id",
-            ],
-          },
-          lastMessage: { $first: "$$ROOT" },
-          unreadCount: {
-            $sum: {
-              $cond: [
-                {
-                  $and: [
-                    { $eq: ["$receiver._id", userId] },
-                    { $eq: ["$read", false] },
-                  ],
-                },
-                1,
-                0,
-              ],
-            },
-          },
-        },
-      },
-    ]);
+        })
+          .sort({ createdAt: -1 })
+          .lean();
 
-    // Decrypt last messages
-    const decryptedChats = chats.map((chat) => {
-      const msgDoc = new ChatMessage(chat.lastMessage);
-      chat.lastMessage.message = msgDoc.decryptMessage();
-      return chat;
+        const unreadCount = await ChatMessage.countDocuments({
+          "sender._id": otherUser._id,
+          "receiver._id": userId,
+          read: false,
+        });
+
+        return {
+          user: otherUser,
+          lastMessage: lastMessage
+            ? {
+                ...lastMessage,
+                message: new ChatMessage(lastMessage).decryptMessage(),
+              }
+            : null,
+          unreadCount,
+        };
+      })
+    );
+
+    // Sort chats by last message date
+    const sortedChats = chats.sort((a, b) => {
+      if (!a.lastMessage) return 1;
+      if (!b.lastMessage) return -1;
+      return (
+        new Date(b.lastMessage.createdAt) - new Date(a.lastMessage.createdAt)
+      );
     });
 
     return res
       .status(200)
       .json(
-        GenRes(
-          200,
-          decryptedChats,
-          null,
-          `Retrieved ${decryptedChats.length} chats`
-        )
+        GenRes(200, sortedChats, null, `Retrieved ${sortedChats.length} chats`)
       );
   } catch (error) {
     return res.status(500).json(GenRes(500, null, error, error?.message));
@@ -282,12 +270,12 @@ const DeleteMessageForEveryone = async (req, res) => {
       $set: { deletedBySender: true, deletedByReceiver: true },
     });
 
-    // Notify receiver through MQTT if online
-    const aedes = req.app.get("aedes");
-    if (aedes) {
-      aedes.publish({
-        topic: `user/${message.receiver._id}/deletedMessages`,
-        payload: JSON.stringify({ messageId }),
+    // Notify receiver through Socket.IO
+    const io = req.app.get("io");
+    if (io) {
+      io.to(message.receiver._id).emit("message_deleted", {
+        messageId,
+        type: "everyone",
       });
     }
 

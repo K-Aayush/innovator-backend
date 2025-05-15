@@ -77,17 +77,21 @@ const UpdateFollow = async (req, res) => {
         // Notify both users through Socket.IO
         const io = req.app.get("io");
         if (io) {
+          // Refresh chat lists
           io.to(follower._id.toString()).emit("refresh_chat_list");
           io.to(following._id.toString()).emit("refresh_chat_list");
 
-          // Send new chat notification to both users
+          // Send new chat notifications
           io.to(follower._id.toString()).emit("new_chat", {
-            user: following,
-            message: welcomeMessage,
+            user: following.toObject(),
+            lastMessage: welcomeMessage.toObject(),
+            unreadCount: 0,
           });
+
           io.to(following._id.toString()).emit("new_chat", {
-            user: follower,
-            message: welcomeMessage,
+            user: follower.toObject(),
+            lastMessage: welcomeMessage.toObject(),
+            unreadCount: 1,
           });
         }
       }

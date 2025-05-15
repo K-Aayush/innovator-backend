@@ -4,7 +4,6 @@ const express = require("express");
 const cors = require("cors");
 const path = require("path");
 const http = require("http");
-const setupSocketHandlers = require("./src/utils/socket/socketHandler");
 const App = require("./src/App");
 const DB = require("./src/config/connectDB");
 
@@ -12,8 +11,6 @@ const DB = require("./src/config/connectDB");
 const app = express();
 const server = http.createServer(app);
 
-// Initialize socket
-setupSocketHandlers(server);
 
 // use middlewares
 app.use(

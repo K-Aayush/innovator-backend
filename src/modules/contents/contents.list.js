@@ -2,7 +2,7 @@ const GenRes = require("../../utils/routers/GenRes");
 const Follow = require("../follow/follow.model");
 const Likes = require("../likes/likes.model");
 const Comments = require("../comments/comments.model");
-const Content = require("./contents.model");
+const Content = require("../contents/contents.model");
 
 function shuffleArray(array) {
   // Fisher-Yates Shuffle
@@ -18,7 +18,7 @@ const ListContents = async (req, res) => {
     const queries = req?.query;
     const page = parseInt(req?.params?.page || "0") || 0;
     const pageSize = 10;
-    const lastId = req.query.lastId; // For cursor-based pagination
+    const lastId = req.query.lastId;
 
     const filters = {};
     const authenQuery = "email,name,search".split(",");
@@ -55,7 +55,7 @@ const ListContents = async (req, res) => {
     // Fetch contents with cursor-based pagination
     const recentContents = await Content.find(filters)
       .sort({ _id: -1 })
-      .limit(pageSize + 1) // Fetch one extra to determine if there are more
+      .limit(pageSize + 1)
       .lean();
 
     // Split into relevant and irrelevant
@@ -134,11 +134,7 @@ const ListContents = async (req, res) => {
 
     const response = GenRes(
       200,
-      {
-        contents: finalCall,
-        hasMore,
-        nextCursor: hasMore ? contents[contents.length - 1]._id : null,
-      },
+      finalCall,
       null,
       "Responding shuffled & paginated content"
     );

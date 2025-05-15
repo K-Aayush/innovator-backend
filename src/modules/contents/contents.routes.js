@@ -30,13 +30,12 @@ router.post("/update-contents/:id", basicMiddleware, UpdateContents);
 router.delete("/delete-content/:id", basicMiddleware, DeleteContent);
 
 // get data
-router.get("/list-contents/:page", basicMiddleware, ListContents);
+router.get("/list-contents", basicMiddleware, ListContents);
 
 // admin
 router.get("/list-admin-contents/:page", basicMiddleware, ListContents);
 
 // make delete
 router.delete("/admin-delete-content/:id", basicMiddleware, DeleteContent);
-
 
 module.exports = router;

@@ -5,8 +5,7 @@ const Comments = require("../comments/comments.model");
 
 const ListCourses = async (req, res) => {
   try {
-    const page = parseInt(req?.params?.page || "0") || 0;
-    const pageSize = 10;
+    const limit = 10;
     const lastId = req.query.lastId;
     const search = req.query.search;
 
@@ -25,14 +24,14 @@ const ListCourses = async (req, res) => {
       filters._id = { $lt: lastId };
     }
 
-    // Fetch courses with pagination
+    // Fetch courses with cursor-based pagination
     const courses = await Courses.find(filters)
       .sort({ _id: -1 })
-      .skip(page * pageSize)
-      .limit(pageSize + 1)
+      .limit(limit + 1)
       .lean();
 
-    const hasMore = courses.length > pageSize;
+    // Check if there are more items
+    const hasMore = courses.length > limit;
     const results = hasMore ? courses.slice(0, -1) : courses;
 
     // Attach likes and comments count
@@ -57,7 +56,11 @@ const ListCourses = async (req, res) => {
 
     const response = GenRes(
       200,
-      finalResults,
+      {
+        courses: finalResults,
+        hasMore,
+        nextCursor: hasMore ? results[results.length - 1]._id : null,
+      },
       null,
       `Retrieved ${finalResults.length} courses`
     );

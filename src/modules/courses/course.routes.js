@@ -29,7 +29,7 @@ route.post("/add-course", basicMiddleware, AddCourse);
 route.delete("/delete-courses/:id", basicMiddleware, DelCourses);
 
 // list courses
-route.get("/list-courses/:page", basicMiddleware, ListCourses);
+route.get("/list-courses", basicMiddleware, ListCourses);
 // admin list courses
 route.get("/admin-list-courses/:page", basicMiddleware, ListCourses);
 

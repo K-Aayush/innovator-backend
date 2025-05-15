@@ -5,7 +5,6 @@ const Comments = require("../comments/comments.model");
 const Content = require("../contents/contents.model");
 
 function shuffleArray(array) {
-  // Fisher-Yates Shuffle
   for (let i = array.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [array[i], array[j]] = [array[j], array[i]];
@@ -15,129 +14,102 @@ function shuffleArray(array) {
 
 const ListContents = async (req, res) => {
   try {
-    const queries = req?.query;
-    const page = parseInt(req?.params?.page || "0") || 0;
+    const { email, name, search, lastId } = req.query;
+    const user = req?.user;
     const pageSize = 10;
-    const lastId = req.query.lastId;
 
     const filters = {};
-    const authenQuery = "email,name,search".split(",");
-    const user = req?.user;
 
-    // Extract query filters
-    for (const query of authenQuery) {
-      if (queries?.[query]) {
-        if (query === "email") {
-          filters["author.email"] = queries[query];
-        } else if (query === "name") {
-          filters["author.name"] = { $regex: queries[query], $options: "i" };
-        } else if (query === "search") {
-          filters.$or = [
-            { "author.name": { $regex: queries[query], $options: "i" } },
-            { "author.email": { $regex: queries[query], $options: "i" } },
-          ];
-        }
-      }
+    // Filtering logic
+    if (email) filters["author.email"] = email;
+    if (name) filters["author.name"] = { $regex: name, $options: "i" };
+    if (search) {
+      filters.$or = [
+        { "author.name": { $regex: search, $options: "i" } },
+        { "author.email": { $regex: search, $options: "i" } },
+      ];
     }
 
-    // Add cursor-based pagination
+    // Cursor-based pagination
     if (lastId) {
       filters._id = { $lt: lastId };
     }
 
-    // Get followings only if no filter applied
+    // Get following emails if no filter is applied
     let followingEmails = [];
-    if (Object.keys(filters)?.length === 0) {
+    if (Object.keys(filters).length === 0) {
       const followings = await Follow.find({ "follower.email": user?.email });
-      followingEmails = followings.map((item) => item.following.email);
+      followingEmails = followings.map((f) => f.following.email);
     }
 
-    // Fetch contents with cursor-based pagination
-    const recentContents = await Content.find(filters)
+    // Fetch content
+    const allContents = await Content.find(filters)
       .sort({ _id: -1 })
       .limit(pageSize + 1)
       .lean();
 
-    // Split into relevant and irrelevant
-    const relevant = [];
-    const irrelevant = [];
+    const hasMore = allContents.length > pageSize;
+    const contents = hasMore ? allContents.slice(0, -1) : allContents;
 
-    const hasMore = recentContents.length > pageSize;
-    const contents = hasMore ? recentContents.slice(0, -1) : recentContents;
-
+    // Determine relevance
+    const relevant = [],
+      irrelevant = [];
     for (const content of contents) {
       const authorEmail = content.author?.email || "";
       const authorName = content.author?.name || "";
 
-      let isRelevant = false;
+      let isRelevant =
+        (email && authorEmail === email) ||
+        (name && new RegExp(name, "i").test(authorName)) ||
+        (search &&
+          (new RegExp(search, "i").test(authorName) ||
+            new RegExp(search, "i").test(authorEmail))) ||
+        (followingEmails.length > 0 && followingEmails.includes(authorEmail)) ||
+        Object.keys(filters).length === 0;
 
-      if (filters["author.email"] && authorEmail === filters["author.email"]) {
-        isRelevant = true;
-      } else if (
-        filters["author.name"] &&
-        new RegExp(filters["author.name"].$regex, "i").test(authorName)
-      ) {
-        isRelevant = true;
-      } else if (
-        filters.$or &&
-        (new RegExp(filters.$or[0]["author.name"].$regex, "i").test(
-          authorName
-        ) ||
-          new RegExp(filters.$or[1]["author.email"].$regex, "i").test(
-            authorEmail
-          ))
-      ) {
-        isRelevant = true;
-      } else if (
-        followingEmails.length > 0 &&
-        followingEmails.includes(authorEmail)
-      ) {
-        isRelevant = true;
-      } else if (Object.keys(filters).length === 0) {
-        isRelevant = true;
-      }
-
-      if (isRelevant) {
-        relevant.push(content);
-      } else {
-        irrelevant.push(content);
-      }
+      (isRelevant ? relevant : irrelevant).push(content);
     }
 
-    // Combine and shuffle
+    // Shuffle content
     const mixedContent = shuffleArray([...relevant, ...irrelevant]);
 
-    // Attach likes, comments, and liked status
-    const finalCall = await Promise.all(
+    // Attach likes, comments, and followed status
+    const finalContent = await Promise.all(
       mixedContent.map(async (item) => {
-        const find = { uid: item?._id, type: "content" };
-        const likes = await Likes.countDocuments(find);
-        const comments = await Comments.countDocuments(find);
-        const liked = await Likes.findOne({
-          ...find,
-          "user.email": user?.email,
-        });
+        const base = { uid: item._id, type: "content" };
 
-        const followed = await Follow.findOne({
-          "follower.email": user?.email,
-          "following.email": item?.author?.email,
-        });
+        const [likes, comments, liked, followed] = await Promise.all([
+          Likes.countDocuments(base),
+          Comments.countDocuments(base),
+          Likes.findOne({ ...base, "user.email": user?.email }),
+          Follow.findOne({
+            "follower.email": user?.email,
+            "following.email": item?.author?.email,
+          }),
+        ]);
 
-        item.liked = !!liked;
-        item.followed = !!followed;
-        item.likes = likes;
-        item.comments = comments;
-
-        return item;
+        return {
+          ...item,
+          liked: !!liked,
+          likes,
+          comments,
+          followed: !!followed,
+        };
       })
     );
 
+    // Response format
     const response = GenRes(
       200,
-      finalCall,
+      {
+        contents: finalContent,
+        hasMore,
+        nextCursor: hasMore ? contents[contents.length - 1]._id : null,
+      },
       null,
-      "Responding shuffled & paginated content"
+      `Retrieved ${finalContent.length} content items`
     );
+
     return res.status(200).json(response);
   } catch (error) {
     const response = GenRes(500, null, error, error?.message);

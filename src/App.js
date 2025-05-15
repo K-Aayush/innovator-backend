@@ -8,6 +8,7 @@ const courses = require("./modules/courses/course.routes.js");
 const admin = require("./modules/admin/admin.routes.js");
 const shop = require("./modules/shop/shop.routes");
 const chat = require("./modules/chat/chat.routes");
+const search = require("./modules/search/search.routes.js");
 const notifications = require("./modules/notifications/notification.routes");
 const { AccessPrivateFiles } = require("./modules/private-file/access.js");
 
@@ -24,7 +25,8 @@ const App = (app) => {
     admin,
     shop,
     chat,
-    notifications
+    notifications,
+    search
   );
 
   app.use("/courses/private/:subfolder/:filename", AccessPrivateFiles);

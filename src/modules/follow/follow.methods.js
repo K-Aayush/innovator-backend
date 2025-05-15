@@ -65,22 +65,30 @@ const UpdateFollow = async (req, res) => {
       });
 
       if (mutualFollow) {
-        // Create empty chat message to initialize chat
-        const initMessage = new ChatMessage({
+        // Create welcome message from system
+        const welcomeMessage = new ChatMessage({
           sender: follower.toObject(),
           receiver: following.toObject(),
-          message: "",
-          read: true,
-          deletedBySender: true,
-          deletedByReceiver: true,
+          message: "👋 Hey! You can now chat with each other!",
+          read: false,
         });
-        await initMessage.save();
+        await welcomeMessage.save();
 
-        // Emit chat list update to both users
+        // Notify both users through Socket.IO
         const io = req.app.get("io");
         if (io) {
           io.to(follower._id.toString()).emit("refresh_chat_list");
           io.to(following._id.toString()).emit("refresh_chat_list");
+
+          // Send new chat notification to both users
+          io.to(follower._id.toString()).emit("new_chat", {
+            user: following,
+            message: welcomeMessage,
+          });
+          io.to(following._id.toString()).emit("new_chat", {
+            user: follower,
+            message: welcomeMessage,
+          });
         }
       }
     }

@@ -10,8 +10,15 @@ const contentSchema = new Schema(
     files: [String],
     type: gen.required(String, {
       default: "innovation",
-      enum: ["innovation", "news", "announcement", "vacancy", "status"],
-      set: (v) => v.toLowerCase(), 
+      enum: [
+        "innovation",
+        "idea",
+        "project",
+        "question",
+        "annoucement",
+        "other",
+      ],
+      set: (v) => v.toLowerCase(),
     }),
     author: {
       name: gen.required(String),

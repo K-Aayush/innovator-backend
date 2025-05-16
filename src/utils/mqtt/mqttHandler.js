@@ -1,14 +1,14 @@
 const aedes = require("aedes")();
 const jwt = require("jsonwebtoken");
-const CryptoJS = require("crypto-js");
 const Follow = require("../../modules/follow/follow.model");
 const ChatMessage = require("../../modules/chat/chat.model");
 const Notification = require("../../modules/notifications/notification.model");
 
-//store online clients
+// Store online clients and their subscriptions
 const onlineClients = new Map();
+const activeChats = new Map();
 
-//Authenticate mqtt clients using jwt
+// Authenticate mqtt clients using jwt
 aedes.authenticate = async (client, username, password, callback) => {
   try {
     const token = password.toString();
@@ -20,64 +20,201 @@ aedes.authenticate = async (client, username, password, callback) => {
   }
 };
 
-//Handle client connections
-aedes.on("client", async (client) => {
-  onlineClients.set(client.user._id, client.id);
+// Generate unique chat topic for two users
+const getChatTopic = (user1Id, user2Id) => {
+  const ids = [user1Id, user2Id].sort();
+  return `chat/${ids[0]}/${ids[1]}`;
+};
 
-  //publish online status
+// Handle client connections
+aedes.on("client", async (client) => {
+  if (!client.user?._id) return;
+
+  const userId = client.user._id;
+  onlineClients.set(userId, client.id);
+
+  // Subscribe to personal topics
+  const personalTopics = [
+    `user/${userId}/status`,
+    `user/${userId}/messages`,
+    `user/${userId}/notifications`,
+    `user/${userId}/presence`,
+  ];
+
+  personalTopics.forEach((topic) => {
+    client.subscribe(
+      {
+        topic,
+        qos: 0,
+      },
+      (err) => {
+        if (err) {
+          console.error(`Error subscribing to ${topic}:`, err);
+        } else {
+          console.log(`Subscribed to ${topic}`);
+        }
+      }
+    );
+  });
+
+  // Publish online status
   aedes.publish({
-    topic: "user/status",
+    topic: `user/${userId}/presence`,
     payload: JSON.stringify({
-      userId: client.user._id,
+      userId: userId,
       status: "online",
       timestamp: new Date(),
     }),
   });
+
+  console.log(`Client ${userId} connected and subscribed to personal topics`);
 });
 
-//Handle client disconnections
+// Handle client disconnections
 aedes.on("clientDisconnect", async (client) => {
-  onlineClients.delete(client.user._id);
+  if (!client.user?._id) return;
 
+  const userId = client.user._id;
+
+  // Get all active chat topics for this user
+  const userChatTopics = [];
+  activeChats.forEach((users, topic) => {
+    if (users.includes(userId)) {
+      userChatTopics.push(topic);
+    }
+  });
+
+  // Unsubscribe from all topics
+  [
+    ...userChatTopics,
+    `user/${userId}/presence`,
+    `user/${userId}/status`,
+    `user/${userId}/messages`,
+    `user/${userId}/notifications`,
+  ].forEach((topic) => {
+    client.unsubscribe(topic, (err) => {
+      if (err) {
+        console.error(`Error unsubscribing from ${topic}:`, err);
+      } else {
+        console.log(`Unsubscribed from ${topic}`);
+      }
+    });
+  });
+
+  // Clean up maps
+  onlineClients.delete(userId);
+  userChatTopics.forEach((topic) => activeChats.delete(topic));
+
+  // Publish offline status
   aedes.publish({
-    topic: "user/status",
+    topic: `user/${userId}/presence`,
     payload: JSON.stringify({
-      userId: client.user._id,
+      userId: userId,
       status: "offline",
       timestamp: new Date(),
     }),
   });
+
+  console.log(`Client ${userId} disconnected and unsubscribed from all topics`);
 });
 
-//Handle published messages
+// Handle published messages
 aedes.on("publish", async (packet, client) => {
-  if (!client) return;
+  if (!client || !client.user) return;
 
-  if (packet.topic.startsWith("chat/")) {
+  const userId = client.user._id;
+
+  // Handle chat initiation
+  if (packet.topic.startsWith("chat/init/")) {
     try {
-      const [, receiverId] = packet.topic.split("/");
+      const receiverId = packet.topic.split("/")[2];
       const message = JSON.parse(packet.payload.toString());
 
-      //verify mutual followers
+      // Verify mutual followers
       const [followA, followB] = await Promise.all([
         Follow.findOne({
-          "follower._id": client.user._id,
+          "follower._id": userId,
           "following._id": receiverId,
         }),
         Follow.findOne({
           "follower._id": receiverId,
-          "following._id": client.user._id,
+          "following._id": userId,
         }),
       ]);
 
       if (!followA || !followB) {
+        console.log("Users are not mutual followers");
         return;
       }
 
-      //save encrypted message
+      // Create chat topic and subscribe both users
+      const chatTopic = getChatTopic(userId, receiverId);
+      activeChats.set(chatTopic, [userId, receiverId]);
+
+      // Subscribe initiator
+      client.subscribe(
+        {
+          topic: chatTopic,
+          qos: 0,
+        },
+        (err) => {
+          if (err) {
+            console.error("Error subscribing initiator:", err);
+          } else {
+            console.log(`Initiator subscribed to ${chatTopic}`);
+          }
+        }
+      );
+
+      // Subscribe receiver if online
+      const receiverClientId = onlineClients.get(receiverId);
+      if (receiverClientId) {
+        const receiverClient = aedes.clients[receiverClientId];
+        if (receiverClient) {
+          receiverClient.subscribe(
+            {
+              topic: chatTopic,
+              qos: 0,
+            },
+            (err) => {
+              if (err) {
+                console.error("Error subscribing receiver:", err);
+              } else {
+                console.log(`Receiver subscribed to ${chatTopic}`);
+              }
+            }
+          );
+        }
+      }
+
+      console.log(
+        `Chat initiated between ${userId} and ${receiverId} on topic ${chatTopic}`
+      );
+    } catch (error) {
+      console.error("Error in chat initiation:", error);
+    }
+  }
+
+  // Handle chat messages
+  if (
+    packet.topic.startsWith("chat/") &&
+    !packet.topic.startsWith("chat/init/")
+  ) {
+    try {
+      const message = JSON.parse(packet.payload.toString());
+      const chatUsers = activeChats.get(packet.topic);
+
+      if (!chatUsers || !chatUsers.includes(userId)) {
+        console.log("Invalid chat or unauthorized user");
+        return;
+      }
+
+      const receiverId = chatUsers.find((id) => id !== userId);
+
+      // Save message to database
       const chatMessage = new ChatMessage({
         sender: {
-          _id: client.user._id,
+          _id: userId,
           email: client.user.email,
           name: message.senderName,
           picture: message.senderPicture,
@@ -94,14 +231,14 @@ aedes.on("publish", async (packet, client) => {
 
       await chatMessage.save();
 
-      //Create Notification
+      // Create notification
       const notification = new Notification({
         recipient: {
           _id: receiverId,
           email: message.receiverEmail,
         },
         sender: {
-          _id: client.user._id,
+          _id: userId,
           email: client.user.email,
           name: message.senderName,
           picture: message.senderPicture,
@@ -110,33 +247,40 @@ aedes.on("publish", async (packet, client) => {
         content: `New message from ${message.senderName}`,
         metadata: {
           messageId: chatMessage._id.toString(),
-          type: "chat",
+          chatTopic: packet.topic,
         },
       });
 
       await notification.save();
 
-      //forward message to receiver if online
-      const receiverClientId = onlineClients.get(receiverId);
-      if (receiverClientId) {
-        aedes.publish({
-          topic: `user/${receiverId}/messages`,
-          payload: JSON.stringify({
-            ...chatMessage.toObject(),
-            message: chatMessage.decryptMessage(),
-          }),
-        });
-      }
-
-      //send notification
+      // Publish notification
       aedes.publish({
         topic: `user/${receiverId}/notifications`,
         payload: JSON.stringify(notification),
       });
+
+      console.log(`Message processed and delivered on topic ${packet.topic}`);
     } catch (error) {
-      console.error("Error processing message:", error);
+      console.error("Error processing chat message:", error);
     }
   }
+});
+
+// Handle subscriptions
+aedes.on("subscribe", (subscriptions, client) => {
+  if (!client || !client.user) return;
+
+  console.log(
+    `Client ${client.user._id} subscribed to:`,
+    subscriptions.map((s) => s.topic)
+  );
+});
+
+// Handle unsubscriptions
+aedes.on("unsubscribe", (subscriptions, client) => {
+  if (!client || !client.user) return;
+
+  console.log(`Client ${client.user._id} unsubscribed from:`, subscriptions);
 });
 
 module.exports = aedes;

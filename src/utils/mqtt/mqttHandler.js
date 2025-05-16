@@ -202,63 +202,43 @@ aedes.on("publish", async (packet, client) => {
     !packet.topic.startsWith("chat/init/")
   ) {
     try {
-      const message = JSON.parse(packet.payload.toString());
-      const chatUsers = activeChats.get(packet.topic);
+      const messageData = JSON.parse(packet.payload.toString());
 
-      if (!chatUsers || !chatUsers.includes(userId)) {
-        console.log("Invalid chat or unauthorized user");
-        return;
-      }
-
-      const receiverId = chatUsers.find((id) => id !== userId);
-
-      // Get sender and receiver details from database
-      const [sender, receiver] = await Promise.all([
-        User.findById(userId).select("_id email name picture").lean(),
-        User.findById(receiverId).select("_id email name picture").lean(),
-      ]);
-
-      if (!sender || !receiver) {
-        console.error("Sender or receiver not found");
-        return;
-      }
-
-      // Save message to database
+      // Create chat message
       const chatMessage = new ChatMessage({
         sender: {
-          _id: sender._id.toString(),
-          email: sender.email,
-          name: sender.name,
-          picture: sender.picture || "",
+          _id: messageData.senderId,
+          email: messageData.senderEmail,
+          name: messageData.senderName,
+          picture: messageData.senderPicture,
         },
         receiver: {
-          _id: receiver._id.toString(),
-          email: receiver.email,
-          name: receiver.name,
-          picture: receiver.picture || "",
+          _id: messageData.receiverId,
+          email: messageData.receiverEmail,
+          name: messageData.receiverName,
+          picture: messageData.receiverPicture,
         },
-        message: message.content,
+        message: messageData.content,
         read: false,
       });
 
-      console.log("chat sending in db:", chatMessage);
+      // Save message to database
       await chatMessage.save();
-      console.log("saved");
 
       // Create notification
       const notification = new Notification({
         recipient: {
-          _id: receiver._id.toString(),
-          email: receiver.email,
+          _id: messageData.receiverId,
+          email: messageData.receiverEmail,
         },
         sender: {
-          _id: sender._id.toString(),
-          email: sender.email,
-          name: sender.name,
-          picture: sender.picture || "",
+          _id: messageData.senderId,
+          email: messageData.senderEmail,
+          name: messageData.senderName,
+          picture: messageData.senderPicture,
         },
         type: "message",
-        content: `New message from ${sender.name}`,
+        content: `New message from ${messageData.senderName}`,
         metadata: {
           messageId: chatMessage._id.toString(),
           chatTopic: packet.topic,
@@ -269,11 +249,13 @@ aedes.on("publish", async (packet, client) => {
 
       // Publish notification
       aedes.publish({
-        topic: `user/${receiverId}/notifications`,
+        topic: `user/${messageData.receiverId}/notifications`,
         payload: JSON.stringify(notification),
       });
 
-      console.log(`Message processed and delivered on topic ${packet.topic}`);
+      console.log(
+        `Message saved and notification sent for topic ${packet.topic}`
+      );
     } catch (error) {
       console.error("Error processing chat message:", error);
     }

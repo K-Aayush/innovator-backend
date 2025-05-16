@@ -241,7 +241,9 @@ aedes.on("publish", async (packet, client) => {
         read: false,
       });
 
+      console.log("chat sending in db:", chatMessage);
       await chatMessage.save();
+      console.log("saved");
 
       // Create notification
       const notification = new Notification({

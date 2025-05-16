@@ -203,6 +203,7 @@ aedes.on("publish", async (packet, client) => {
   ) {
     try {
       const messageData = JSON.parse(packet.payload.toString());
+      console.log("Received message data:", messageData);
 
       // Create chat message
       const chatMessage = new ChatMessage({
@@ -210,13 +211,13 @@ aedes.on("publish", async (packet, client) => {
           _id: messageData.senderId,
           email: messageData.senderEmail,
           name: messageData.senderName,
-          picture: messageData.senderPicture,
+          picture: messageData.senderPicture || "",
         },
         receiver: {
           _id: messageData.receiverId,
           email: messageData.receiverEmail,
           name: messageData.receiverName,
-          picture: messageData.receiverPicture,
+          picture: messageData.receiverPicture || "",
         },
         message: messageData.content,
         read: false,
@@ -224,6 +225,7 @@ aedes.on("publish", async (packet, client) => {
 
       // Save message to database
       await chatMessage.save();
+      console.log("Message saved successfully:", chatMessage._id);
 
       // Create notification
       const notification = new Notification({
@@ -235,7 +237,7 @@ aedes.on("publish", async (packet, client) => {
           _id: messageData.senderId,
           email: messageData.senderEmail,
           name: messageData.senderName,
-          picture: messageData.senderPicture,
+          picture: messageData.senderPicture || "",
         },
         type: "message",
         content: `New message from ${messageData.senderName}`,

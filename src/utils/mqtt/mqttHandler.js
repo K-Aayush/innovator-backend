@@ -3,6 +3,7 @@ const jwt = require("jsonwebtoken");
 const Follow = require("../../modules/follow/follow.model");
 const ChatMessage = require("../../modules/chat/chat.model");
 const Notification = require("../../modules/notifications/notification.model");
+const User = require("../../modules/user/user.model");
 
 // Store online clients and their subscriptions
 const onlineClients = new Map();
@@ -211,19 +212,30 @@ aedes.on("publish", async (packet, client) => {
 
       const receiverId = chatUsers.find((id) => id !== userId);
 
+      // Get sender and receiver details from database
+      const [sender, receiver] = await Promise.all([
+        User.findById(userId).select("_id email name picture").lean(),
+        User.findById(receiverId).select("_id email name picture").lean(),
+      ]);
+
+      if (!sender || !receiver) {
+        console.error("Sender or receiver not found");
+        return;
+      }
+
       // Save message to database
       const chatMessage = new ChatMessage({
         sender: {
-          _id: userId,
-          email: client.user.email,
-          name: message.senderName,
-          picture: message.senderPicture,
+          _id: sender._id.toString(),
+          email: sender.email,
+          name: sender.name,
+          picture: sender.picture || "",
         },
         receiver: {
-          _id: receiverId,
-          email: message.receiverEmail,
-          name: message.receiverName,
-          picture: message.receiverPicture,
+          _id: receiver._id.toString(),
+          email: receiver.email,
+          name: receiver.name,
+          picture: receiver.picture || "",
         },
         message: message.content,
         read: false,
@@ -234,17 +246,17 @@ aedes.on("publish", async (packet, client) => {
       // Create notification
       const notification = new Notification({
         recipient: {
-          _id: receiverId,
-          email: message.receiverEmail,
+          _id: receiver._id.toString(),
+          email: receiver.email,
         },
         sender: {
-          _id: userId,
-          email: client.user.email,
-          name: message.senderName,
-          picture: message.senderPicture,
+          _id: sender._id.toString(),
+          email: sender.email,
+          name: sender.name,
+          picture: sender.picture || "",
         },
         type: "message",
-        content: `New message from ${message.senderName}`,
+        content: `New message from ${sender.name}`,
         metadata: {
           messageId: chatMessage._id.toString(),
           chatTopic: packet.topic,

@@ -131,6 +131,19 @@ aedes.on("publish", async (packet, client) => {
       const receiverId = packet.topic.split("/")[2];
       const message = JSON.parse(packet.payload.toString());
 
+      // Validate required fields
+      if (
+        !message.sender?._id ||
+        !message.sender?.email ||
+        !message.sender?.name ||
+        !message.receiver?._id ||
+        !message.receiver?.email ||
+        !message.receiver?.name
+      ) {
+        console.error("Missing required fields in chat initiation:", message);
+        return;
+      }
+
       // Verify mutual followers
       const [followA, followB] = await Promise.all([
         Follow.findOne({
@@ -204,6 +217,20 @@ aedes.on("publish", async (packet, client) => {
     try {
       const messageData = JSON.parse(packet.payload.toString());
       console.log("Received message data:", messageData);
+
+      // Validate required fields
+      if (
+        !messageData.sender?._id ||
+        !messageData.sender?.email ||
+        !messageData.sender?.name ||
+        !messageData.receiver?._id ||
+        !messageData.receiver?.email ||
+        !messageData.receiver?.name ||
+        !messageData.message
+      ) {
+        console.error("Missing required fields in message data:", messageData);
+        return;
+      }
 
       // Create chat message
       const chatMessage = new ChatMessage({

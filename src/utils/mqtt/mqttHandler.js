@@ -235,18 +235,18 @@ aedes.on("publish", async (packet, client) => {
       // Create chat message
       const chatMessage = new ChatMessage({
         sender: {
-          _id: messageData.senderId,
-          email: messageData.senderEmail,
-          name: messageData.senderName,
-          picture: messageData.senderPicture || "",
+          _id: messageData.sender._id,
+          email: messageData.sender.email,
+          name: messageData.sender.name,
+          picture: messageData.sender.picture || "",
         },
         receiver: {
-          _id: messageData.receiverId,
-          email: messageData.receiverEmail,
-          name: messageData.receiverName,
-          picture: messageData.receiverPicture || "",
+          _id: messageData.receiver._id,
+          email: messageData.receiver.email,
+          name: messageData.receiver.name,
+          picture: messageData.receiver.picture || "",
         },
-        message: messageData.content,
+        message: messageData.message,
         read: false,
       });
 
@@ -257,17 +257,17 @@ aedes.on("publish", async (packet, client) => {
       // Create notification
       const notification = new Notification({
         recipient: {
-          _id: messageData.receiverId,
-          email: messageData.receiverEmail,
+          _id: messageData.receiver._id,
+          email: messageData.receiver.email,
         },
         sender: {
-          _id: messageData.senderId,
-          email: messageData.senderEmail,
-          name: messageData.senderName,
-          picture: messageData.senderPicture || "",
+          _id: messageData.sender._id,
+          email: messageData.sender.email,
+          name: messageData.sender.name,
+          picture: messageData.sender.picture || "",
         },
         type: "message",
-        content: `New message from ${messageData.senderName}`,
+        content: `New message from ${messageData.sender.name}`,
         metadata: {
           messageId: chatMessage._id.toString(),
           chatTopic: packet.topic,
@@ -278,7 +278,7 @@ aedes.on("publish", async (packet, client) => {
 
       // Publish notification
       aedes.publish({
-        topic: `user/${messageData.receiverId}/notifications`,
+        topic: `user/${messageData.receiver._id}/notifications`,
         payload: JSON.stringify(notification),
       });
 

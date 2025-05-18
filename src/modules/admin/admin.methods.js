@@ -1,9 +1,8 @@
-const bcrypt = require("bcryptjs");
 const User = require("../user/user.model");
 const transporter = require("../../config/Mailer");
 const GenRes = require("../../utils/routers/GenRes");
 
-//method to add vendor
+// method to add vendor
 const AddVendor = async (req, res) => {
   try {
     // Check if user is admin
@@ -30,8 +29,8 @@ const AddVendor = async (req, res) => {
       dob,
     } = req.body;
 
-    //check if vendor already exists
-    const existingVendor = await User.findOne({ email });
+    // Check if vendor already exists
+    const existingVendor = await User.findOne({ email: email.toLowerCase() });
     if (existingVendor) {
       return res
         .status(400)
@@ -45,27 +44,23 @@ const AddVendor = async (req, res) => {
         );
     }
 
-    //Create vendor account
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
-
-    //create new user
+    // Create new user, pass raw password here
     const newVendor = new User({
-      email,
-      password: hashedPassword,
+      email: email.toLowerCase(),
+      password,
       businessName,
       businessDescription,
       name,
       phone,
-      dob: new Date(dob),
+      dob: dob ? new Date(dob) : undefined,
       level: "bronze",
       role: "vendor",
     });
 
-    //save new vendor
+    // Save new vendor (pre-save hook will hash the password)
     await newVendor.save();
 
-    //send credentials to email
+    // Send credentials to email
     await transporter.sendMail({
       from: process.env.EMAIL,
       to: email,

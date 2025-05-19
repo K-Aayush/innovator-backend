@@ -8,7 +8,7 @@ const ShopSchema = new Schema({
   description: gen.required(String),
   price: gen.required(Number),
   content: String,
-  images: gen.required([String]),
+  images: [String],
   stock: gen.required(Number),
   category: {
     _id: gen.required(String),

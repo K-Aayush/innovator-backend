@@ -5,13 +5,14 @@ const ShopFile = require("../../utils/fileProcessor/multer.shop");
 const {
   ListShop,
   AddShop,
-  DeleteShop,
+  UpdateProduct,
   GetCart,
   AddToCart,
   RemoveFromCart,
-  MultipleFiles,
+  DeleteFiles,
   SingleShop,
   ReStock,
+  DeleteProduct,
 } = require("./shop.methods");
 const {
   AddCategory,
@@ -25,8 +26,8 @@ router.get("/vendor-categories", vendorMiddleware, GetCategories);
 router.delete("/vendor-delete-category/:id", vendorMiddleware, DeleteCategory);
 
 // Public shop routes
-router.get("/list-shops/:page", basicMiddleware, ListShop);
-router.get("/get-shop/:id", basicMiddleware, SingleShop);
+router.get("/vendor-list-shops/:page", basicMiddleware, ListShop);
+router.get("/vendor-get-shop/:id", basicMiddleware, SingleShop);
 
 // Vendor shop management routes
 router.get("/vendor-list-shops/:page", vendorMiddleware, ListShop);
@@ -37,14 +38,17 @@ router.post(
   ShopFile.array("images"),
   AddShop
 );
-router.post("/vendor-update-shop/:id", vendorMiddleware, ReStock);
-router.delete("/vendor-delete-shop/:id", vendorMiddleware, DeleteShop);
-router.post(
-  "/vendor-upload-shop-images",
+router.put(
+  "/vendor-products/:id",
   vendorMiddleware,
-  ShopFile.any(),
-  MultipleFiles
+  ShopFile.array("images"),
+  UpdateProduct
 );
+
+router.patch("/vendor-products/:id/stock", vendorMiddleware, ReStock);
+
+router.delete("/vendor-products/:id", vendorMiddleware, DeleteProduct);
+router.delete("/vendor-files", vendorMiddleware, DeleteFiles);
 
 // Cart management routes
 router.get("/list-carts", basicMiddleware, GetCart);

@@ -125,8 +125,16 @@ const AddShop = async (req, res) => {
         );
     }
 
-    // Use req.file_locations for image URLs
-    const imageUrls = req.file_locations || [];
+    // Generate image URLs from req.files
+    const imageUrls = req.files
+      ? req.files.map((file) => `/uploads/${file.filename}`)
+      : [];
+
+    if (imageUrls.length === 0) {
+      return res
+        .status(400)
+        .json(GenRes(400, null, null, "At least one image is required"));
+    }
 
     // Prepare shop data
     const shopData = {
@@ -153,47 +161,6 @@ const AddShop = async (req, res) => {
   } catch (error) {
     console.error("Error in AddShop:", error);
     return res.status(500).json(GenRes(500, null, error, error?.message));
-  }
-};
-
-const DeleteShop = async (req, res) => {
-  try {
-    const _id = req?.params?.id;
-    if (!_id) {
-      const response = GenRes(400, null, null, "NO id found");
-      return res.status(400).json(response);
-    }
-
-    const filters = { _id };
-
-    // Add vendor check if vendor is making the request
-    if (req.vendor) {
-      filters["vendor._id"] = req.vendor._id;
-    }
-
-    const deleted = await Shop.findOneAndDelete(filters);
-    if (!deleted) {
-      const response = GenRes(404, null, null, "NO shop found");
-      return res.status(404).json(response);
-    }
-
-    const failed = [];
-
-    for (const items of deleted?.images) {
-      try {
-        const imagePath = path.join(process.cwd(), items?.slice(1));
-        await fs.promises.unlink(imagePath);
-      } catch (error) {
-        console.log(error);
-        failed.push(items);
-      }
-    }
-
-    const response = GenRes(200, { failed }, null, "Shop deleted");
-    return res.status(200).json(response);
-  } catch (error) {
-    const response = GenRes(500, null, error, error?.message);
-    return res.status(500).json(response);
   }
 };
 
@@ -251,19 +218,223 @@ const GetCart = async (req, res) => {
   }
 };
 
-const MultipleFiles = async (req, res) => {
+const UpdateProduct = async (req, res) => {
   try {
-    const file_locations = req?.file_locations;
-    const response = GenRes(
-      200,
-      file_locations,
-      null,
-      "Uploaded Successfully!"
-    );
-    return res.status(200).json(response);
+    const _id = req?.params?.id;
+    const data = req?.body;
+    const fileLocations = req?.file_locations || [];
+
+    // Validate product ID
+    if (!_id || !isValidObjectId(_id)) {
+      return res
+        .status(400)
+        .json(
+          GenRes(400, null, new Error("Invalid ID"), "Please provide valid ID")
+        );
+    }
+
+    // Validate required fields
+    if (!data.name || !data.description || !data.price || !data.stock) {
+      return res
+        .status(400)
+        .json(
+          GenRes(
+            400,
+            null,
+            new Error("Missing required fields"),
+            "Please provide all required fields"
+          )
+        );
+    }
+
+    // Find the product with vendor check
+    const filters = { _id };
+    if (req.vendor) {
+      filters["vendor._id"] = req.vendor._id;
+    }
+
+    const product = await Shop.findOne(filters);
+    if (!product) {
+      return res.status(404).json(GenRes(404, null, null, "Product not found"));
+    }
+
+    // Validate category if provided
+    if (data.categoryId) {
+      if (!isValidObjectId(data.categoryId)) {
+        return res
+          .status(400)
+          .json(
+            GenRes(
+              400,
+              null,
+              new Error("Invalid category ID"),
+              "Please provide a valid category ID"
+            )
+          );
+      }
+
+      const category = await Category.findOne({
+        _id: data.categoryId,
+        "vendor._id": req.vendor._id,
+      });
+
+      if (!category) {
+        return res
+          .status(404)
+          .json(
+            GenRes(
+              404,
+              null,
+              { error: "Category not found" },
+              "Invalid category"
+            )
+          );
+      }
+
+      product.category = {
+        _id: category._id.toString(),
+        name: category.name,
+      };
+    }
+
+    // Update product fields
+    product.name = data.name;
+    product.description = data.description;
+    product.price = Number(data.price);
+    product.stock = Number(data.stock);
+    product.content = data.content || product.content;
+
+    // Handle images
+    if (fileLocations.length > 0) {
+      // Delete old images
+      if (product.images && product.images.length > 0) {
+        const failedFiles = [];
+        for (const oldImage of product.images) {
+          try {
+            fs.unlinkSync(path.join(process.cwd(), oldImage.slice(1)));
+          } catch (error) {
+            console.log(`Failed to delete image ${oldImage}:`, error?.message);
+            failedFiles.push(oldImage);
+          }
+        }
+        if (failedFiles.length > 0) {
+          console.log("Some old images failed to delete:", failedFiles);
+        }
+      }
+
+      // Update with new images
+      product.images = fileLocations;
+    }
+
+    // Save the updated product
+    await product.save();
+
+    return res
+      .status(200)
+      .json(GenRes(200, product, null, "Product updated successfully"));
+  } catch (error) {
+    console.error("Error in UpdateProduct:", error);
+
+    // Clean up uploaded files if update fails
+    if (req?.file_locations?.length > 0) {
+      for (const file of req.file_locations) {
+        try {
+          fs.unlinkSync(path.join(process.cwd(), file.slice(1)));
+        } catch (cleanupError) {
+          console.log(
+            `Failed to clean up file ${file}:`,
+            cleanupError?.message
+          );
+        }
+      }
+    }
+
+    return res.status(500).json(GenRes(500, null, error, error?.message));
+  }
+};
+
+const ReStock = async (req, res) => {
+  try {
+    const _id = req?.params?.id;
+    const { stock } = req?.body;
+
+    if (!_id || !isValidObjectId(_id)) {
+      const response = GenRes(
+        400,
+        null,
+        new Error("Invalid ID"),
+        "Please provide valid ID"
+      );
+      return res.status(400).json(response);
+    }
+
+    const filters = { _id };
+
+    if (req.vendor) {
+      filters["vendor._id"] = req.vendor._id;
+    }
+
+    const data = await Shop.findOneAndUpdate(filters, { $set: { stock } });
+    if (!data) {
+      return res.status(404).json(GenRes(404, null, null, "Product not found"));
+    }
+
+    return res.status(200).json(GenRes(200, data, null, "Updated stock"));
   } catch (error) {
     const response = GenRes(500, null, error, error?.message);
     return res.status(500).json(response);
+  }
+};
+
+const DeleteProduct = async (req, res) => {
+  try {
+    const _id = req?.params?.id;
+
+    // Validate product ID
+    if (!_id || !isValidObjectId(_id)) {
+      return res
+        .status(400)
+        .json(
+          GenRes(400, null, new Error("Invalid ID"), "Please provide valid ID")
+        );
+    }
+
+    // Find the product with vendor check
+    const filters = { _id };
+    if (req.vendor) {
+      filters["vendor._id"] = req.vendor._id;
+    }
+
+    const product = await Shop.findOne(filters);
+    if (!product) {
+      return res.status(404).json(GenRes(404, null, null, "Product not found"));
+    }
+
+    // Delete associated images
+    if (product.images && product.images.length > 0) {
+      const failedFiles = [];
+      for (const image of product.images) {
+        try {
+          fs.unlinkSync(path.join(process.cwd(), image.slice(1)));
+        } catch (error) {
+          console.log(`Failed to delete image ${image}:`, error?.message);
+          failedFiles.push(image);
+        }
+      }
+      if (failedFiles.length > 0) {
+        console.log("Some images failed to delete:", failedFiles);
+      }
+    }
+
+    // Delete the product
+    await Shop.deleteOne({ _id });
+
+    return res
+      .status(200)
+      .json(GenRes(200, null, null, "Product deleted successfully"));
+  } catch (error) {
+    console.error("Error in DeleteProduct:", error);
+    return res.status(500).json(GenRes(500, null, error, error?.message));
   }
 };
 
@@ -305,49 +476,15 @@ const DeleteFiles = async (req, res) => {
   }
 };
 
-const ReStock = async (req, res) => {
-  try {
-    const _id = req?.params?.id;
-    const { stock } = req?.body;
-
-    if (!_id || !isValidObjectId(_id)) {
-      const response = GenRes(
-        400,
-        null,
-        new Error("Invalid ID"),
-        "Please provide valid ID"
-      );
-      return res.status(400).json(response);
-    }
-
-    const filters = { _id };
-
-    // Add vendor check if vendor is making the request
-    if (req.vendor) {
-      filters["vendor._id"] = req.vendor._id;
-    }
-
-    const data = await Shop.findOneAndUpdate(filters, { $set: { stock } });
-    if (!data) {
-      return res.status(404).json(GenRes(404, null, null, "Product not found"));
-    }
-
-    return res.status(200).json(GenRes(200, data, null, "Updated stock"));
-  } catch (error) {
-    const response = GenRes(500, null, error, error?.message);
-    return res.status(500).json(response);
-  }
-};
-
 module.exports = {
   ListShop,
   AddShop,
-  DeleteShop,
   AddToCart,
   RemoveFromCart,
   GetCart,
-  MultipleFiles,
+  UpdateProduct,
   DeleteFiles,
   SingleShop,
   ReStock,
+  DeleteProduct,
 };

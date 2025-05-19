@@ -52,7 +52,7 @@ async function saveChatMessage(senderEmail, receiverEmail, message) {
         const existing = await fs.readFile(file, "utf8");
         messages = JSON.parse(existing);
       } catch (error) {
-        // File doesn't exist or is empty, start with empty array
+        console.log(error);
       }
 
       messages.push(messageData);

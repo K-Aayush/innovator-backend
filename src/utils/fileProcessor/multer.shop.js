@@ -6,8 +6,6 @@ const path = require("path");
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     const subfolder = req?.query?.subfolder || "";
-
-    // Full local path
     const fullPath = path.join(process.cwd(), "shop", subfolder);
 
     try {
@@ -16,7 +14,6 @@ const storage = multer.diskStorage({
       return cb(new Error(`Failed to create directory: ${err.message}`), null);
     }
 
-    // Save server-relative destination path for use in filename
     req.destination = `/shop/${subfolder}`.replaceAll("//", "/");
     cb(null, fullPath);
   },
@@ -28,22 +25,32 @@ const storage = multer.diskStorage({
     const safeName =
       req?.query?.filename || `${file.fieldname}-${timestamp}-${random}${ext}`;
 
-    // Save final full relative path for use later
-    req.file_location = `${req.destination}/${safeName}`.replaceAll("//", "/");
+    const fileLocation = `${req.destination}/${safeName}`.replaceAll("//", "/");
+    req.file_locations = req.file_locations || [];
+    req.file_locations.push(fileLocation);
 
-    console.log(req?.file_locations);
-    const oldlocations = Array?.isArray(req?.file_locations)
-      ? req?.file_locations
-      : [];
-
-    console.log("Old locations : ", oldlocations);
-
-    oldlocations.push(`${req.destination}/${safeName}`.replaceAll("//", "/"));
-    req.file_locations = oldlocations;
     cb(null, safeName);
   },
 });
 
-const ShopFile = multer({ storage, limits: 150 * 1024 * 1024 * 1024 });
+// File filter for images only
+const fileFilter = (req, file, cb) => {
+  const allowedTypes = /jpeg|jpg|png|gif/;
+  const extname = allowedTypes.test(
+    path.extname(file.originalname).toLowerCase()
+  );
+  const mimetype = allowedTypes.test(file.mimetype);
+
+  if (extname && mimetype) {
+    return cb(null, true);
+  }
+  cb(new Error("Only image files (JPEG, PNG, GIF) are allowed"), false);
+};
+
+const ShopFile = multer({
+  storage,
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB limit
+  fileFilter,
+});
 
 module.exports = ShopFile;

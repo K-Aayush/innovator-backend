@@ -7,59 +7,102 @@ const ChatMessage = require("../../modules/chat/chat.model");
 const Notification = require("../../modules/notifications/notification.model");
 const User = require("../../modules/user/user.model");
 
-// Store online clients and their subscriptions
+// Store online clients and their active chats
 const onlineClients = new Map();
-const activeChats = new Map();
+const userChats = new Map();
 
-// Ensure chat directory exists for a user
-async function ensureChatDirectory(userEmail) {
-  const baseDir = path.join(process.cwd(), "uploads");
-  const userDir = path.join(baseDir, userEmail, "chat");
+// Ensure chat directory exists and return file path
+async function ensureChatDirectory(userEmail, chatId) {
+  const baseDir = path.join(process.cwd(), "uploads", "chat", userEmail);
 
   try {
+    await fs.mkdir(path.join(process.cwd(), "uploads"), { recursive: true });
+    await fs.mkdir(path.join(process.cwd(), "uploads", "chat"), {
+      recursive: true,
+    });
     await fs.mkdir(baseDir, { recursive: true });
-    await fs.mkdir(path.join(baseDir, userEmail), { recursive: true });
-    await fs.mkdir(userDir, { recursive: true });
-    return userDir;
+
+    return path.join(baseDir, `${chatId}.json`);
   } catch (error) {
     console.error("Error creating chat directory:", error);
     throw error;
   }
 }
 
-// Save chat message to file
-async function saveChatMessage(senderEmail, receiverEmail, message) {
-  try {
-    // Save for sender
-    const senderDir = await ensureChatDirectory(senderEmail);
-    const senderFile = path.join(senderDir, `${receiverEmail}.json`);
+// Generate chat ID from user IDs
+function generateChatId(...userIds) {
+  return userIds.sort().join("_");
+}
 
-    // Save for receiver
-    const receiverDir = await ensureChatDirectory(receiverEmail);
-    const receiverFile = path.join(receiverDir, `${senderEmail}.json`);
+// Save chat message and relationship data to file
+async function saveChatData(
+  senderEmail,
+  receiverEmail,
+  senderId,
+  receiverId,
+  message
+) {
+  try {
+    const chatId = generateChatId(senderId, receiverId);
+
+    // Get file paths for both users
+    const senderFile = await ensureChatDirectory(senderEmail, chatId);
+    const receiverFile = await ensureChatDirectory(receiverEmail, chatId);
+
+    // Fetch relationship data
+    const [followData, followerData] = await Promise.all([
+      Follow.findOne({
+        "follower._id": senderId,
+        "following._id": receiverId,
+      }).lean(),
+      Follow.findOne({
+        "follower._id": receiverId,
+        "following._id": senderId,
+      }).lean(),
+    ]);
+
+    const chatData = {
+      messages: [],
+      relationship: {
+        following: followData || null,
+        follower: followerData || null,
+        lastUpdated: new Date(),
+      },
+    };
+
+    // Encrypt message before saving
+    const encryptedMessage = ChatMessage.encryptMessage(message);
 
     const messageData = {
       timestamp: new Date(),
       sender: senderEmail,
       receiver: receiverEmail,
-      message: message,
+      message: encryptedMessage,
     };
 
     // Update both files
     for (const file of [senderFile, receiverFile]) {
-      let messages = [];
+      let existingData = chatData;
       try {
         const existing = await fs.readFile(file, "utf8");
-        messages = JSON.parse(existing);
+        existingData = JSON.parse(existing);
       } catch (error) {
-        console.log(error);
+        console.log("Creating new chat file");
       }
 
-      messages.push(messageData);
-      await fs.writeFile(file, JSON.stringify(messages, null, 2));
+      existingData.messages.push(messageData);
+      existingData.relationship = {
+        following: followData || existingData.relationship?.following || null,
+        follower: followerData || existingData.relationship?.follower || null,
+        lastUpdated: new Date(),
+      };
+
+      await fs.writeFile(file, JSON.stringify(existingData, null, 2));
     }
+
+    return messageData;
   } catch (error) {
-    console.error("Error saving chat message to file:", error);
+    console.error("Error saving chat data:", error);
     throw error;
   }
 }
@@ -89,6 +132,11 @@ aedes.on("client", async (client) => {
   const userId = client.user._id;
   onlineClients.set(userId, client.id);
 
+  // Initialize user's chat set if not exists
+  if (!userChats.has(userId)) {
+    userChats.set(userId, new Set());
+  }
+
   // Subscribe to personal topics
   const personalTopics = [
     `user/${userId}/status`,
@@ -96,6 +144,12 @@ aedes.on("client", async (client) => {
     `user/${userId}/notifications`,
     `user/${userId}/presence`,
   ];
+
+  // Resubscribe to all active chats
+  const activeChats = userChats.get(userId);
+  if (activeChats) {
+    personalTopics.push(...activeChats);
+  }
 
   personalTopics.forEach((topic) => {
     client.subscribe(
@@ -124,17 +178,12 @@ aedes.on("clientDisconnect", async (client) => {
 
   const userId = client.user._id;
 
-  // Get all active chat topics for this user
-  const userChatTopics = [];
-  activeChats.forEach((users, topic) => {
-    if (users.includes(userId)) {
-      userChatTopics.push(topic);
-    }
-  });
+  // Get user's active chat topics
+  const userTopics = userChats.get(userId) || new Set();
 
   // Unsubscribe from all topics
   const topics = [
-    ...userChatTopics,
+    ...Array.from(userTopics),
     `user/${userId}/presence`,
     `user/${userId}/status`,
     `user/${userId}/messages`,
@@ -145,9 +194,8 @@ aedes.on("clientDisconnect", async (client) => {
     client.unsubscribe(topic);
   });
 
-  // Clean up maps
+  // Remove client from online clients but keep their chat topics
   onlineClients.delete(userId);
-  userChatTopics.forEach((topic) => activeChats.delete(topic));
 
   // Publish offline status
   aedes.publish({
@@ -196,9 +244,15 @@ aedes.on("publish", async (packet, client) => {
 
       if (!followA || !followB) return;
 
-      // Create chat topic and subscribe both users
+      // Create chat topic and add to both users' chat sets
       const chatTopic = getChatTopic(userId, receiverId);
-      activeChats.set(chatTopic, [userId, receiverId]);
+
+      // Add chat topic to both users' sets
+      if (!userChats.has(userId)) userChats.set(userId, new Set());
+      if (!userChats.has(receiverId)) userChats.set(receiverId, new Set());
+
+      userChats.get(userId).add(chatTopic);
+      userChats.get(receiverId).add(chatTopic);
 
       // Subscribe initiator
       client.subscribe({ topic: chatTopic, qos: 0 });
@@ -212,11 +266,15 @@ aedes.on("publish", async (packet, client) => {
         }
       }
 
-      // Create chat directories for both users
-      await Promise.all([
-        ensureChatDirectory(message.sender.email),
-        ensureChatDirectory(message.receiver.email),
-      ]);
+      // Initialize chat data with relationship info
+      const chatId = generateChatId(userId, receiverId);
+      await saveChatData(
+        message.sender.email,
+        message.receiver.email,
+        userId,
+        receiverId,
+        "Chat initiated"
+      );
     } catch (error) {
       console.error("Error in chat initiation:", error);
     }
@@ -233,16 +291,20 @@ aedes.on("publish", async (packet, client) => {
       // Validate required fields
       if (
         !messageData.sender?.email ||
+        !messageData.sender?._id ||
         !messageData.receiver?.email ||
+        !messageData.receiver?._id ||
         !messageData.message
       ) {
         return;
       }
 
-      // Save message to files
-      await saveChatMessage(
+      // Save message and relationship data
+      await saveChatData(
         messageData.sender.email,
         messageData.receiver.email,
+        messageData.sender._id,
+        messageData.receiver._id,
         messageData.message
       );
 
@@ -288,7 +350,7 @@ aedes.on("publish", async (packet, client) => {
 
       await notification.save();
 
-      // Publish notification and real-time message update
+      // Publish notification
       aedes.publish({
         topic: `user/${messageData.receiver._id}/notifications`,
         payload: JSON.stringify(notification),
@@ -297,7 +359,10 @@ aedes.on("publish", async (packet, client) => {
       // Send real-time message update to both users
       const messageUpdate = {
         type: "new_message",
-        message: chatMessage,
+        message: {
+          ...chatMessage.toObject(),
+          message: messageData.message, // Send original message to clients
+        },
       };
 
       [messageData.sender._id, messageData.receiver._id].forEach((userId) => {

@@ -270,12 +270,17 @@ const DeleteMessageForEveryone = async (req, res) => {
       $set: { deletedBySender: true, deletedByReceiver: true },
     });
 
-    // Notify receiver through Socket.IO
-    const io = req.app.get("io");
-    if (io) {
-      io.to(message.receiver._id).emit("message_deleted", {
-        messageId,
-        type: "everyone",
+    // Notify receiver through MQTT
+    const aedes = req.app.get("aedes");
+    if (aedes) {
+      aedes.publish({
+        topic: `user/${message.receiver._id}/messages`,
+        payload: JSON.stringify({
+          type: "message_deleted",
+          messageId,
+          deleteType: "everyone",
+        }),
+        qos: 0,
       });
     }
 

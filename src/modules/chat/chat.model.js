@@ -26,27 +26,64 @@ const MessageSchema = new Schema(
     deletedBySender: gen.required(Boolean, { default: false }),
     deletedByReceiver: gen.required(Boolean, { default: false }),
   },
-  { timestamps: true }
+  {
+    timestamps: true,
+    toJSON: { virtuals: true },
+    toObject: { virtuals: true },
+  }
 );
 
-// Encryption/Decryption methods
+// Static methods for encryption/decryption
+MessageSchema.statics.encryptMessage = function (
+  message,
+  key = process.env.CHAT_ENCRYPTION_KEY
+) {
+  try {
+    return CryptoJS.AES.encrypt(message, key).toString();
+  } catch (error) {
+    console.error("Error encrypting message:", error);
+    throw new Error("Failed to encrypt message");
+  }
+};
+
+MessageSchema.statics.decryptMessage = function (
+  encryptedMessage,
+  key = process.env.CHAT_ENCRYPTION_KEY
+) {
+  try {
+    const bytes = CryptoJS.AES.decrypt(encryptedMessage, key);
+    return bytes.toString(CryptoJS.enc.Utf8);
+  } catch (error) {
+    console.error("Error decrypting message:", error);
+    return "[Encrypted Message]";
+  }
+};
+
+// Instance methods
+MessageSchema.methods.encryptMessage = function (message) {
+  return this.constructor.encryptMessage(message);
+};
+
+MessageSchema.methods.decryptMessage = function () {
+  return this.constructor.decryptMessage(this.message);
+};
+
+// Pre-save hook for encryption
 MessageSchema.pre("save", function (next) {
   if (this.isModified("message")) {
-    this.message = CryptoJS.AES.encrypt(
-      this.message,
-      process.env.CHAT_ENCRYPTION_KEY
-    ).toString();
+    try {
+      this.message = this.constructor.encryptMessage(this.message);
+    } catch (error) {
+      return next(error);
+    }
   }
   next();
 });
 
-MessageSchema.methods.decryptMessage = function () {
-  const bytes = CryptoJS.AES.decrypt(
-    this.message,
-    process.env.CHAT_ENCRYPTION_KEY
-  );
-  return bytes.toString(CryptoJS.enc.Utf8);
-};
+// Virtual for decrypted message
+MessageSchema.virtual("decryptedMessage").get(function () {
+  return this.decryptMessage();
+});
 
 const ChatMessage = models?.ChatMessage || model("ChatMessage", MessageSchema);
 module.exports = ChatMessage;

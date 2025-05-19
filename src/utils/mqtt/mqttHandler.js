@@ -11,17 +11,23 @@ const User = require("../../modules/user/user.model");
 const onlineClients = new Map();
 const userChats = new Map();
 
-// Ensure chat directory exists and return file path
-async function ensureChatDirectory(userEmail, chatId) {
-  const baseDir = path.join(process.cwd(), "uploads", "chat", userEmail);
-
+// Create base chat directory during initialization
+(async () => {
   try {
     await fs.mkdir(path.join(process.cwd(), "uploads"), { recursive: true });
-    await fs.mkdir(path.join(process.cwd(), "uploads", "chat"), {
-      recursive: true,
-    });
-    await fs.mkdir(baseDir, { recursive: true });
+    await fs.mkdir(path.join(process.cwd(), "uploads", "chat"), { recursive: true });
+    console.log("Base chat directory structure created");
+  } catch (error) {
+    console.error("Error creating base chat directory:", error);
+  }
+})();
 
+// Ensure chat directory exists and return file path
+async function ensureChatDirectory(userEmail, chatId) {
+  const baseDir = path.join(process.cwd(), "uploads", userEmail, "chat");
+
+  try {
+    await fs.mkdir(baseDir, { recursive: true });
     return path.join(baseDir, `${chatId}.json`);
   } catch (error) {
     console.error("Error creating chat directory:", error);
@@ -61,15 +67,6 @@ async function saveChatData(
       }).lean(),
     ]);
 
-    const chatData = {
-      messages: [],
-      relationship: {
-        following: followData || null,
-        follower: followerData || null,
-        lastUpdated: new Date(),
-      },
-    };
-
     // Encrypt message before saving
     const encryptedMessage = ChatMessage.encryptMessage(message);
 
@@ -82,7 +79,15 @@ async function saveChatData(
 
     // Update both files
     for (const file of [senderFile, receiverFile]) {
-      let existingData = chatData;
+      let existingData = {
+        messages: [],
+        relationship: {
+          following: followData || null,
+          follower: followerData || null,
+          lastUpdated: new Date(),
+        },
+      };
+
       try {
         const existing = await fs.readFile(file, "utf8");
         existingData = JSON.parse(existing);
@@ -267,7 +272,6 @@ aedes.on("publish", async (packet, client) => {
       }
 
       // Initialize chat data with relationship info
-      const chatId = generateChatId(userId, receiverId);
       await saveChatData(
         message.sender.email,
         message.receiver.email,

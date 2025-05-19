@@ -5,8 +5,21 @@ const path = require("path");
 // Create Multer storage engine
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
+    const userEmail = req?.vendor?.email;
     const subfolder = req?.query?.subfolder || "";
-    const fullPath = path.join(process.cwd(), "shop", subfolder);
+
+    if (!userEmail) {
+      return cb(new Error("Vendor email not provided in request."), null);
+    }
+
+    // Full local path
+    const fullPath = path.join(
+      process.cwd(),
+      "uploads",
+      userEmail,
+      "shop",
+      subfolder
+    );
 
     try {
       mkdirSync(fullPath, { recursive: true });
@@ -14,7 +27,11 @@ const storage = multer.diskStorage({
       return cb(new Error(`Failed to create directory: ${err.message}`), null);
     }
 
-    req.destination = `/shop/${subfolder}`.replaceAll("//", "/");
+    // Save server-relative destination path for use in filename
+    req.destination = `/uploads/${userEmail}/shop/${subfolder}`.replaceAll(
+      "//",
+      "/"
+    );
     cb(null, fullPath);
   },
 
@@ -49,7 +66,7 @@ const fileFilter = (req, file, cb) => {
 
 const ShopFile = multer({
   storage,
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB limit
+  limits: { fileSize: 10 * 1024 * 1024 }, 
   fileFilter,
 });
 

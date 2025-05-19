@@ -82,7 +82,7 @@ const basicMiddleware = async (req, res, next) => {
       email: user.email,
       phone: user.phone,
       role: user.role,
-      uid: user.uid || null, // Firebase UID if exists
+      uid: user.uid || null, 
     };
 
     return next();

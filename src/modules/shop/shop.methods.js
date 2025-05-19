@@ -21,11 +21,20 @@ const ListShop = async (req, res) => {
     const page = parseInt(req?.params?.page || "0") || 0;
     const fetchLimit = 20;
 
-    const filters = {};
-
-    if (req.vendor) {
-      filters["vendor._id"] = req.vendor._id;
+    if (!req.vendor) {
+      return res
+        .status(401)
+        .json(
+          GenRes(401, null, null, "Unauthorized: Vendor not authenticated")
+        );
     }
+
+    const filters = {
+      "vendor._id": req.vendor._id,
+      category: { $exists: true, $ne: null },
+      "category._id": { $exists: true, $ne: "" },
+      "category.name": { $exists: true, $ne: "" },
+    };
 
     if (query) {
       filters.$or = [
@@ -34,7 +43,6 @@ const ListShop = async (req, res) => {
         { "category.name": { $regex: query, $options: "i" } },
       ];
     }
-
     if (categoryId) {
       filters["category._id"] = categoryId;
     }
@@ -46,8 +54,26 @@ const ListShop = async (req, res) => {
       .select("-content")
       .lean();
 
-    const mixedProduct = shuffleArray(recentProducts);
+    const validProducts = recentProducts.filter(
+      (product) =>
+        product.category && product.category._id && product.category.name
+    );
 
+    if (validProducts.length < recentProducts.length) {
+      console.warn(
+        "Filtered out invalid products:",
+        recentProducts.filter(
+          (product) =>
+            !product.category || !product.category._id || !product.category.name
+        )
+      );
+    }
+
+    if (validProducts.length === 0 && page === 0) {
+      console.log("No products found for vendor:", req.vendor._id);
+    }
+
+    const mixedProduct = shuffleArray(validProducts);
     const response = GenRes(
       200,
       mixedProduct,
@@ -56,7 +82,14 @@ const ListShop = async (req, res) => {
     );
     return res.status(200).json(response);
   } catch (error) {
-    const response = GenRes(500, null, error, error?.message);
+    console.error("Error in ListShop:", {
+      message: error.message,
+      stack: error.stack,
+      vendorId: req.vendor?._id,
+      query: req.query,
+      page: req.params.page,
+    });
+    const response = GenRes(500, null, error, "Failed to fetch products");
     return res.status(500).json(response);
   }
 };
@@ -64,14 +97,12 @@ const ListShop = async (req, res) => {
 const SingleShop = async (req, res) => {
   try {
     const _id = req?.params?.id;
-    if (!_id) {
-      const response = GenRes(400, null, null, "Missing product id");
+    if (!_id || !isValidObjectId(_id)) {
+      const response = GenRes(400, null, null, "Missing or invalid product id");
       return res.status(400).json(response);
     }
 
     const filters = { _id };
-
-    // Add vendor check if vendor is making the request
     if (req.vendor) {
       filters["vendor._id"] = req.vendor._id;
     }
@@ -84,6 +115,7 @@ const SingleShop = async (req, res) => {
     const response = GenRes(200, data, null, "Responding single shop data");
     return res.status(200).json(response);
   } catch (error) {
+    console.error("Error in SingleShop:", error);
     const response = GenRes(500, null, error, error?.message);
     return res.status(500).json(response);
   }
@@ -92,12 +124,12 @@ const SingleShop = async (req, res) => {
 const AddShop = async (req, res) => {
   try {
     console.log("req.body:", req.body);
-    console.log("req.files:", req.files);
     console.log("req.file_locations:", req.file_locations);
     console.log("req.vendor:", req.vendor);
     console.log("data.categoryId:", req.body.categoryId);
 
     const data = req.body;
+    const fileLocations = req.file_locations || [];
 
     if (!data) {
       return res.status(400).json(GenRes(400, null, null, "Missing data"));
@@ -125,12 +157,7 @@ const AddShop = async (req, res) => {
         );
     }
 
-    // Generate image URLs from req.files
-    const imageUrls = req.files
-      ? req.files.map((file) => `/uploads/${file.filename}`)
-      : [];
-
-    if (imageUrls.length === 0) {
+    if (fileLocations.length === 0) {
       return res
         .status(400)
         .json(GenRes(400, null, null, "At least one image is required"));
@@ -143,7 +170,7 @@ const AddShop = async (req, res) => {
       price: Number(data.price),
       stock: Number(data.stock),
       content: data.content,
-      images: imageUrls,
+      images: fileLocations,
       vendor: {
         _id: req.vendor._id,
         email: req.vendor.email,
@@ -160,6 +187,19 @@ const AddShop = async (req, res) => {
     return res.status(201).json(GenRes(201, newShop, null, "New shop added"));
   } catch (error) {
     console.error("Error in AddShop:", error);
+    // Clean up uploaded files on error
+    if (req.file_locations?.length > 0) {
+      for (const file of req.file_locations) {
+        try {
+          fs.unlinkSync(path.join(process.cwd(), file.slice(1)));
+        } catch (cleanupError) {
+          console.log(
+            `Failed to clean up file ${file}:`,
+            cleanupError?.message
+          );
+        }
+      }
+    }
     return res.status(500).json(GenRes(500, null, error, error?.message));
   }
 };
@@ -172,15 +212,13 @@ const AddToCart = async (req, res) => {
     const updated = await Cart.findOneAndUpdate(
       { product: data?.product, email: user?.email },
       { $set: { ...data, email: user?.email } },
-      {
-        new: true,
-        upsert: true,
-      }
+      { new: true, upsert: true }
     );
 
     const response = GenRes(200, updated, null, "Added to cart");
     return res.status(200).json(response);
   } catch (error) {
+    console.error("Error in AddToCart:", error);
     const response = GenRes(500, null, error, error?.message);
     return res.status(500).json(response);
   }
@@ -190,7 +228,7 @@ const RemoveFromCart = async (req, res) => {
   try {
     const _id = req?.params?.id;
     if (!_id || !isValidObjectId(_id)) {
-      return res.status(404).json(GenRes(404, null, null, "Invalid"));
+      return res.status(400).json(GenRes(400, null, null, "Invalid cart ID"));
     }
     const user = req?.user;
     const cart = await Cart.findOneAndDelete(
@@ -198,11 +236,14 @@ const RemoveFromCart = async (req, res) => {
       { new: true }
     );
     if (!cart) {
-      return res.status(404).json(GenRes(404, null, null, "Not found"));
+      return res
+        .status(404)
+        .json(GenRes(404, null, null, "Cart item not found"));
     }
     const response = GenRes(200, cart, null, "Removed from cart");
     return res.status(200).json(response);
   } catch (error) {
+    console.error("Error in RemoveFromCart:", error);
     return res.status(500).json(GenRes(500, null, error, error?.message));
   }
 };
@@ -211,9 +252,10 @@ const GetCart = async (req, res) => {
   try {
     const email = req?.user?.email;
     const data = await Cart.find({ email }).populate("product");
-    const response = GenRes(200, data, null, "Cart");
+    const response = GenRes(200, data, null, "Cart retrieved successfully");
     return res.status(200).json(response);
   } catch (error) {
+    console.error("Error in GetCart:", error);
     return res.status(500).json(GenRes(500, null, error, error?.message));
   }
 };
@@ -369,18 +411,22 @@ const ReStock = async (req, res) => {
     }
 
     const filters = { _id };
-
     if (req.vendor) {
       filters["vendor._id"] = req.vendor._id;
     }
 
-    const data = await Shop.findOneAndUpdate(filters, { $set: { stock } });
+    const data = await Shop.findOneAndUpdate(
+      filters,
+      { $set: { stock } },
+      { new: true }
+    );
     if (!data) {
       return res.status(404).json(GenRes(404, null, null, "Product not found"));
     }
 
     return res.status(200).json(GenRes(200, data, null, "Updated stock"));
   } catch (error) {
+    console.error("Error in ReStock:", error);
     const response = GenRes(500, null, error, error?.message);
     return res.status(500).json(response);
   }
@@ -452,12 +498,11 @@ const DeleteFiles = async (req, res) => {
     }
 
     const failedFile = [];
-
     for (const file of filesList) {
       try {
         fs.unlinkSync(path.join(process.cwd(), file.slice(1)));
       } catch (error) {
-        console.log(error?.message);
+        console.log(`Failed to delete file ${file}:`, error?.message);
         failedFile.push(file);
       }
     }
@@ -466,11 +511,11 @@ const DeleteFiles = async (req, res) => {
       failedFile?.length > 0 ? 207 : 200,
       { failedFile },
       null,
-      "Files Deleted"
+      "Files deleted"
     );
-
     return res.status(response?.status).json(response);
   } catch (error) {
+    console.error("Error in DeleteFiles:", error);
     const response = GenRes(500, null, error, error?.message);
     return res.status(500).json(response);
   }

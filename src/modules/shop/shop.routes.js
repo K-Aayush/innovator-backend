@@ -18,16 +18,18 @@ const {
   AddCategory,
   GetCategories,
   DeleteCategory,
+  UpdateCategory,
 } = require("./category.methods");
 
 // Category routes for vendors
 router.post("/vendor-add-category", vendorMiddleware, AddCategory);
 router.get("/vendor-categories", vendorMiddleware, GetCategories);
+router.put("/vendor-update-category/:id", vendorMiddleware, UpdateCategory);
 router.delete("/vendor-delete-category/:id", vendorMiddleware, DeleteCategory);
 
 // Public shop routes
-router.get("/vendor-list-shops/:page", basicMiddleware, ListShop);
-router.get("/vendor-get-shop/:id", basicMiddleware, SingleShop);
+router.get("/list-shops/:page", basicMiddleware, ListShop);
+router.get("/get-shop/:id", basicMiddleware, SingleShop);
 
 // Vendor shop management routes
 router.get("/vendor-list-shops/:page", vendorMiddleware, ListShop);
@@ -44,9 +46,7 @@ router.put(
   ShopFile.array("images"),
   UpdateProduct
 );
-
 router.patch("/vendor-products/:id/stock", vendorMiddleware, ReStock);
-
 router.delete("/vendor-products/:id", vendorMiddleware, DeleteProduct);
 router.delete("/vendor-files", vendorMiddleware, DeleteFiles);
 

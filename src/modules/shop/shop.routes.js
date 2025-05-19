@@ -31,7 +31,12 @@ router.get("/get-shop/:id", basicMiddleware, SingleShop);
 // Vendor shop management routes
 router.get("/vendor-list-shops/:page", vendorMiddleware, ListShop);
 router.get("/vendor-get-shop/:id", vendorMiddleware, SingleShop);
-router.post("/vendor-add-shop", vendorMiddleware, AddShop);
+router.post(
+  "/vendor-add-shop",
+  vendorMiddleware,
+  ShopFile.array("images"),
+  AddShop
+);
 router.post("/vendor-update-shop/:id", vendorMiddleware, ReStock);
 router.delete("/vendor-delete-shop/:id", vendorMiddleware, DeleteShop);
 router.post(

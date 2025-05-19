@@ -290,10 +290,9 @@ const DeleteMessageForEveryone = async (req, res) => {
 // Delete entire conversation for me
 const DeleteConversation = async (req, res) => {
   try {
-    const otherUserId = req.params.userId;
-    const userId = req.user._id;
+    const otherUserId = req.query.otherUserId;
 
-    if (!isValidObjectId(otherUserId)) {
+    if (!otherUserId || !isValidObjectId(otherUserId)) {
       return res
         .status(400)
         .json(
@@ -301,28 +300,24 @@ const DeleteConversation = async (req, res) => {
         );
     }
 
-    // Update all messages in the conversation
+    const userId = req.user._id;
+
+    // Mark messages as deletedBySender if current user is sender
     await ChatMessage.updateMany(
       {
-        $or: [
-          { "sender._id": userId, "receiver._id": otherUserId },
-          { "sender._id": otherUserId, "receiver._id": userId },
-        ],
+        "sender._id": userId,
+        "receiver._id": otherUserId,
       },
+      { $set: { deletedBySender: true } }
+    );
+
+    // Mark messages as deletedByReceiver if current user is receiver
+    await ChatMessage.updateMany(
       {
-        $set: {
-          deletedBySender: {
-            $cond: [{ $eq: ["$sender._id", userId] }, true, "$deletedBySender"],
-          },
-          deletedByReceiver: {
-            $cond: [
-              { $eq: ["$receiver._id", userId] },
-              true,
-              "$deletedByReceiver",
-            ],
-          },
-        },
-      }
+        "sender._id": otherUserId,
+        "receiver._id": userId,
+      },
+      { $set: { deletedByReceiver: true } }
     );
 
     return res

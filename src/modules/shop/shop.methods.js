@@ -91,23 +91,31 @@ const SingleShop = async (req, res) => {
 
 const AddShop = async (req, res) => {
   try {
-    const data = req?.body;
+    console.log("req.body:", req.body);
+    console.log("req.files:", req.files);
+    console.log("req.file_locations:", req.file_locations);
+    console.log("req.vendor:", req.vendor);
+    console.log("data.categoryId:", req.body.categoryId);
+
+    const data = req.body;
 
     if (!data) {
-      const response = GenRes(400, null, null, "Missing data");
-      return res.status(400).json(response);
+      return res.status(400).json(GenRes(400, null, null, "Missing data"));
     }
 
     if (!data.categoryId) {
-      const response = GenRes(400, null, null, "Category is required");
-      return res.status(400).json(response);
+      return res
+        .status(400)
+        .json(GenRes(400, null, null, "Category is required"));
     }
 
-    // Verify category exists and belongs to vendor
+    // Verify category
     const category = await Category.findOne({
       _id: data.categoryId,
       "vendor._id": req.vendor._id,
     });
+
+    console.log("Found category:", category);
 
     if (!category) {
       return res
@@ -117,27 +125,34 @@ const AddShop = async (req, res) => {
         );
     }
 
-    // Add vendor and category information
-    data.vendor = {
-      _id: req.vendor._id,
-      email: req.vendor.email,
-      businessName: req.vendor.businessName,
+    // Use req.file_locations for image URLs
+    const imageUrls = req.file_locations || [];
+
+    // Prepare shop data
+    const shopData = {
+      name: data.name,
+      description: data.description,
+      price: Number(data.price),
+      stock: Number(data.stock),
+      content: data.content,
+      images: imageUrls,
+      vendor: {
+        _id: req.vendor._id,
+        email: req.vendor.email,
+        businessName: req.vendor.businessName,
+      },
+      category: {
+        _id: category._id.toString(),
+        name: category.name,
+      },
     };
 
-    data.category = {
-      _id: category._id.toString(),
-      name: category.name,
-    };
-
-    delete data.categoryId;
-
-    const newShop = new Shop(data);
+    const newShop = new Shop(shopData);
     await newShop.save();
-    const response = GenRes(201, newShop, null, "New shop added");
-    return res.status(201).json(response);
+    return res.status(201).json(GenRes(201, newShop, null, "New shop added"));
   } catch (error) {
-    const response = GenRes(500, null, error, error?.message);
-    return res.status(500).json(response);
+    console.error("Error in AddShop:", error);
+    return res.status(500).json(GenRes(500, null, error, error?.message));
   }
 };
 

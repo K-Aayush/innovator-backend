@@ -1,5 +1,7 @@
 const aedes = require("aedes")();
 const jwt = require("jsonwebtoken");
+const fs = require("fs").promises;
+const path = require("path");
 const Follow = require("../../modules/follow/follow.model");
 const ChatMessage = require("../../modules/chat/chat.model");
 const Notification = require("../../modules/notifications/notification.model");
@@ -8,6 +10,59 @@ const User = require("../../modules/user/user.model");
 // Store online clients and their subscriptions
 const onlineClients = new Map();
 const activeChats = new Map();
+
+// Ensure chat directory exists for a user
+async function ensureChatDirectory(userEmail) {
+  const baseDir = path.join(process.cwd(), "uploads");
+  const userDir = path.join(baseDir, userEmail, "chat");
+
+  try {
+    await fs.mkdir(baseDir, { recursive: true });
+    await fs.mkdir(path.join(baseDir, userEmail), { recursive: true });
+    await fs.mkdir(userDir, { recursive: true });
+    return userDir;
+  } catch (error) {
+    console.error("Error creating chat directory:", error);
+    throw error;
+  }
+}
+
+// Save chat message to file
+async function saveChatMessage(senderEmail, receiverEmail, message) {
+  try {
+    // Save for sender
+    const senderDir = await ensureChatDirectory(senderEmail);
+    const senderFile = path.join(senderDir, `${receiverEmail}.json`);
+
+    // Save for receiver
+    const receiverDir = await ensureChatDirectory(receiverEmail);
+    const receiverFile = path.join(receiverDir, `${senderEmail}.json`);
+
+    const messageData = {
+      timestamp: new Date(),
+      sender: senderEmail,
+      receiver: receiverEmail,
+      message: message,
+    };
+
+    // Update both files
+    for (const file of [senderFile, receiverFile]) {
+      let messages = [];
+      try {
+        const existing = await fs.readFile(file, "utf8");
+        messages = JSON.parse(existing);
+      } catch (error) {
+        // File doesn't exist or is empty, start with empty array
+      }
+
+      messages.push(messageData);
+      await fs.writeFile(file, JSON.stringify(messages, null, 2));
+    }
+  } catch (error) {
+    console.error("Error saving chat message to file:", error);
+    throw error;
+  }
+}
 
 // Authenticate mqtt clients using jwt
 aedes.authenticate = async (client, username, password, callback) => {
@@ -48,13 +103,7 @@ aedes.on("client", async (client) => {
         topic,
         qos: 0,
       },
-      (err) => {
-        if (err) {
-          console.error(`Error subscribing to ${topic}:`, err);
-        } else {
-          console.log(`Subscribed to ${topic}`);
-        }
-      }
+      () => console.log(`Subscribed to ${topic}`)
     );
   });
 
@@ -67,8 +116,6 @@ aedes.on("client", async (client) => {
       timestamp: new Date(),
     }),
   });
-
-  console.log(`Client ${userId} connected and subscribed to personal topics`);
 });
 
 // Handle client disconnections
@@ -86,20 +133,16 @@ aedes.on("clientDisconnect", async (client) => {
   });
 
   // Unsubscribe from all topics
-  [
+  const topics = [
     ...userChatTopics,
     `user/${userId}/presence`,
     `user/${userId}/status`,
     `user/${userId}/messages`,
     `user/${userId}/notifications`,
-  ].forEach((topic) => {
-    client.unsubscribe(topic, (err) => {
-      if (err) {
-        console.error(`Error unsubscribing from ${topic}:`, err);
-      } else {
-        console.log(`Unsubscribed from ${topic}`);
-      }
-    });
+  ];
+
+  topics.forEach((topic) => {
+    client.unsubscribe(topic);
   });
 
   // Clean up maps
@@ -115,8 +158,6 @@ aedes.on("clientDisconnect", async (client) => {
       timestamp: new Date(),
     }),
   });
-
-  console.log(`Client ${userId} disconnected and unsubscribed from all topics`);
 });
 
 // Handle published messages
@@ -135,12 +176,9 @@ aedes.on("publish", async (packet, client) => {
       if (
         !message.sender?._id ||
         !message.sender?.email ||
-        !message.sender?.name ||
         !message.receiver?._id ||
-        !message.receiver?.email ||
-        !message.receiver?.name
+        !message.receiver?.email
       ) {
-        console.error("Missing required fields in chat initiation:", message);
         return;
       }
 
@@ -156,54 +194,29 @@ aedes.on("publish", async (packet, client) => {
         }),
       ]);
 
-      if (!followA || !followB) {
-        console.log("Users are not mutual followers");
-        return;
-      }
+      if (!followA || !followB) return;
 
       // Create chat topic and subscribe both users
       const chatTopic = getChatTopic(userId, receiverId);
       activeChats.set(chatTopic, [userId, receiverId]);
 
       // Subscribe initiator
-      client.subscribe(
-        {
-          topic: chatTopic,
-          qos: 0,
-        },
-        (err) => {
-          if (err) {
-            console.error("Error subscribing initiator:", err);
-          } else {
-            console.log(`Initiator subscribed to ${chatTopic}`);
-          }
-        }
-      );
+      client.subscribe({ topic: chatTopic, qos: 0 });
 
       // Subscribe receiver if online
       const receiverClientId = onlineClients.get(receiverId);
       if (receiverClientId) {
         const receiverClient = aedes.clients[receiverClientId];
         if (receiverClient) {
-          receiverClient.subscribe(
-            {
-              topic: chatTopic,
-              qos: 0,
-            },
-            (err) => {
-              if (err) {
-                console.error("Error subscribing receiver:", err);
-              } else {
-                console.log(`Receiver subscribed to ${chatTopic}`);
-              }
-            }
-          );
+          receiverClient.subscribe({ topic: chatTopic, qos: 0 });
         }
       }
 
-      console.log(
-        `Chat initiated between ${userId} and ${receiverId} on topic ${chatTopic}`
-      );
+      // Create chat directories for both users
+      await Promise.all([
+        ensureChatDirectory(message.sender.email),
+        ensureChatDirectory(message.receiver.email),
+      ]);
     } catch (error) {
       console.error("Error in chat initiation:", error);
     }
@@ -216,23 +229,24 @@ aedes.on("publish", async (packet, client) => {
   ) {
     try {
       const messageData = JSON.parse(packet.payload.toString());
-      console.log("Received message data:", messageData);
 
       // Validate required fields
       if (
-        !messageData.sender?._id ||
         !messageData.sender?.email ||
-        !messageData.sender?.name ||
-        !messageData.receiver?._id ||
         !messageData.receiver?.email ||
-        !messageData.receiver?.name ||
         !messageData.message
       ) {
-        console.error("Missing required fields in message data:", messageData);
         return;
       }
 
-      // Create chat message
+      // Save message to files
+      await saveChatMessage(
+        messageData.sender.email,
+        messageData.receiver.email,
+        messageData.message
+      );
+
+      // Create chat message in database
       const chatMessage = new ChatMessage({
         sender: {
           _id: messageData.sender._id,
@@ -250,11 +264,9 @@ aedes.on("publish", async (packet, client) => {
         read: false,
       });
 
-      // Save message to database
       await chatMessage.save();
-      console.log("Message saved successfully:", chatMessage._id);
 
-      // Create notification
+      // Create and send notification
       const notification = new Notification({
         recipient: {
           _id: messageData.receiver._id,
@@ -276,36 +288,28 @@ aedes.on("publish", async (packet, client) => {
 
       await notification.save();
 
-      // Publish notification
+      // Publish notification and real-time message update
       aedes.publish({
         topic: `user/${messageData.receiver._id}/notifications`,
         payload: JSON.stringify(notification),
       });
 
-      console.log(
-        `Message saved and notification sent for topic ${packet.topic}`
-      );
+      // Send real-time message update to both users
+      const messageUpdate = {
+        type: "new_message",
+        message: chatMessage,
+      };
+
+      [messageData.sender._id, messageData.receiver._id].forEach((userId) => {
+        aedes.publish({
+          topic: `user/${userId}/messages`,
+          payload: JSON.stringify(messageUpdate),
+        });
+      });
     } catch (error) {
       console.error("Error processing chat message:", error);
     }
   }
-});
-
-// Handle subscriptions
-aedes.on("subscribe", (subscriptions, client) => {
-  if (!client || !client.user) return;
-
-  console.log(
-    `Client ${client.user._id} subscribed to:`,
-    subscriptions.map((s) => s.topic)
-  );
-});
-
-// Handle unsubscriptions
-aedes.on("unsubscribe", (subscriptions, client) => {
-  if (!client || !client.user) return;
-
-  console.log(`Client ${client.user._id} unsubscribed from:`, subscriptions);
 });
 
 module.exports = aedes;

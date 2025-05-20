@@ -182,7 +182,7 @@ const AddShop = async (req, res) => {
 
     const newShop = new Shop(shopData);
     await newShop.save();
-    console.log("Saved shop images:", newShop.images);
+    console.log("Saved shop images:", newShop.images); // Debug
     return res.status(201).json(GenRes(201, newShop, null, "New shop added"));
   } catch (error) {
     console.error("Error in AddShop:", error);

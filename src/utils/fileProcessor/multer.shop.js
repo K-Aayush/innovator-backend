@@ -6,14 +6,13 @@ const path = require("path");
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     const userEmail = req?.vendor?.email;
-    const subfolder = req?.query?.subfolder || "";
 
     if (!userEmail) {
       return cb(new Error("Vendor email not provided in request."), null);
     }
 
     // Full local path
-    const fullPath = path.join(process.cwd(), "uploads", userEmail, subfolder);
+    const fullPath = path.join(process.cwd(), "uploads", userEmail, "shop");
 
     try {
       mkdirSync(fullPath, { recursive: true });
@@ -22,10 +21,7 @@ const storage = multer.diskStorage({
     }
 
     // Save server-relative destination path for use in filename
-    req.destination = `/uploads/${userEmail}/${subfolder}`.replaceAll(
-      "//",
-      "/"
-    );
+    req.destination = `/uploads/${userEmail}/shop`.replaceAll("//", "/");
     cb(null, fullPath);
   },
 
@@ -44,7 +40,7 @@ const storage = multer.diskStorage({
 
     console.log(
       "Saving product file to:",
-      path.join(process.cwd(), "uploads", req.vendor.email, subfolder, safeName)
+      path.join(process.cwd(), "Uploads", req.vendor.email, "shop", safeName)
     );
     console.log("Stored product file path:", fileLocation);
     console.log("Current file_locations:", req.file_locations);
@@ -69,7 +65,7 @@ const fileFilter = (req, file, cb) => {
 
 const ShopFile = multer({
   storage,
-  limits: { fileSize: 10 * 1024 * 1024 },
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
   fileFilter,
 });
 

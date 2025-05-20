@@ -23,11 +23,16 @@ const UserSchema = new Schema(
     businessDescription: String,
     businessAddress: String,
 
-    // authenticatoin
+    // authentication
     email: { type: String, required: true, unique: true },
     uid: gen.unique(String, { required: false }),
     password: String,
     refreshToken: String,
+
+    // ban status
+    banned: { type: Boolean, default: false },
+    banEndDate: Date,
+    banReason: String,
 
     //isverified admin
     isVerified: { type: Boolean, default: false },
@@ -59,7 +64,7 @@ UserSchema.pre("save", async function (next) {
     this.password = await bcrypt.hash(password, salt);
     return next();
   } catch (error) {
-    return next(error); 
+    return next(error);
   }
 });
 

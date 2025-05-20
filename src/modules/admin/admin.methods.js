@@ -1,11 +1,12 @@
 const User = require("../user/user.model");
+const Content = require("../contents/contents.model");
+const Shop = require("../shop/shop.model");
 const transporter = require("../../config/Mailer");
 const GenRes = require("../../utils/routers/GenRes");
 
-// method to add vendor
+// Add vendor 
 const AddVendor = async (req, res) => {
   try {
-    // Check if user is admin
     if (req.user.role !== "admin") {
       return res
         .status(403)
@@ -29,7 +30,6 @@ const AddVendor = async (req, res) => {
       dob,
     } = req.body;
 
-    // Check if vendor already exists
     const existingVendor = await User.findOne({ email: email.toLowerCase() });
     if (existingVendor) {
       return res
@@ -44,7 +44,6 @@ const AddVendor = async (req, res) => {
         );
     }
 
-    // Create new user, pass raw password here
     const newVendor = new User({
       email: email.toLowerCase(),
       password,
@@ -57,10 +56,8 @@ const AddVendor = async (req, res) => {
       role: "vendor",
     });
 
-    // Save new vendor (pre-save hook will hash the password)
     await newVendor.save();
 
-    // Send credentials to email
     await transporter.sendMail({
       from: process.env.EMAIL,
       to: email,
@@ -94,4 +91,412 @@ const AddVendor = async (req, res) => {
   }
 };
 
-module.exports = { AddVendor };
+// Get user statistics
+const GetUserStats = async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res
+        .status(403)
+        .json(
+          GenRes(
+            403,
+            null,
+            { error: "Not authorized" },
+            "Only admins can view statistics"
+          )
+        );
+    }
+
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const thisWeek = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
+    const thisMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+    const [totalUsers, newToday, newThisWeek, newThisMonth] = await Promise.all(
+      [
+        User.countDocuments({ role: "user" }),
+        User.countDocuments({ role: "user", createdAt: { $gte: today } }),
+        User.countDocuments({ role: "user", createdAt: { $gte: thisWeek } }),
+        User.countDocuments({ role: "user", createdAt: { $gte: thisMonth } }),
+      ]
+    );
+
+    return res.status(200).json(
+      GenRes(
+        200,
+        {
+          total: totalUsers,
+          today: newToday,
+          thisWeek: newThisWeek,
+          thisMonth: newThisMonth,
+        },
+        null,
+        "User statistics retrieved"
+      )
+    );
+  } catch (error) {
+    return res.status(500).json(GenRes(500, null, error, error.message));
+  }
+};
+
+// Get user leaderboard
+const GetLeaderboard = async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res
+        .status(403)
+        .json(
+          GenRes(
+            403,
+            null,
+            { error: "Not authorized" },
+            "Only admins can view leaderboard"
+          )
+        );
+    }
+
+    const pipeline = [
+      {
+        $group: {
+          _id: "$author.email",
+          posts: { $sum: 1 },
+          author: { $first: "$author" },
+        },
+      },
+      { $sort: { posts: -1 } },
+      { $limit: 10 },
+    ];
+
+    const leaderboard = await Content.aggregate(pipeline);
+
+    return res
+      .status(200)
+      .json(
+        GenRes(200, leaderboard, null, "Leaderboard retrieved successfully")
+      );
+  } catch (error) {
+    return res.status(500).json(GenRes(500, null, error, error.message));
+  }
+};
+
+// Ban user
+const BanUser = async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res
+        .status(403)
+        .json(
+          GenRes(
+            403,
+            null,
+            { error: "Not authorized" },
+            "Only admins can ban users"
+          )
+        );
+    }
+
+    const { userId, duration, reason } = req.body;
+
+    if (!userId || !duration || !reason) {
+      return res
+        .status(400)
+        .json(
+          GenRes(
+            400,
+            null,
+            { error: "Missing required fields" },
+            "Please provide all required fields"
+          )
+        );
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res
+        .status(404)
+        .json(GenRes(404, null, { error: "User not found" }, "User not found"));
+    }
+
+    const banEndDate = new Date(Date.now() + duration * 24 * 60 * 60 * 1000);
+
+    user.banned = true;
+    user.banEndDate = banEndDate;
+    user.banReason = reason;
+    await user.save();
+
+    await transporter.sendMail({
+      from: process.env.EMAIL,
+      to: user.email,
+      subject: "Account Temporarily Suspended",
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px;">
+          <h2>Account Suspension Notice</h2>
+          <p>Dear ${user.name},</p>
+          <p>Your account has been temporarily suspended for the following reason:</p>
+          <div style="background-color: #f5f5f5; padding: 15px; border-radius: 5px; margin: 20px 0;">
+            <p>${reason}</p>
+          </div>
+          <p>Your account will be suspended until: ${banEndDate.toLocaleDateString()}</p>
+          <p>If you believe this is a mistake, please contact our support team.</p>
+          <p>Best regards,<br>The Admin Team</p>
+        </div>
+      `,
+    });
+
+    return res
+      .status(200)
+      .json(
+        GenRes(
+          200,
+          { message: "User banned successfully" },
+          null,
+          "User banned"
+        )
+      );
+  } catch (error) {
+    return res.status(500).json(GenRes(500, null, error, error.message));
+  }
+};
+
+// Get vendor statistics
+const GetVendorStats = async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res
+        .status(403)
+        .json(
+          GenRes(
+            403,
+            null,
+            { error: "Not authorized" },
+            "Only admins can view vendor statistics"
+          )
+        );
+    }
+
+    const vendors = await User.find({ role: "vendor" }).select(
+      "_id email businessName"
+    );
+    const vendorStats = await Promise.all(
+      vendors.map(async (vendor) => {
+        const products = await Shop.find({ "vendor._id": vendor._id });
+        return {
+          vendor: {
+            _id: vendor._id,
+            email: vendor.email,
+            businessName: vendor.businessName,
+          },
+          totalProducts: products.length,
+          totalValue: products.reduce(
+            (sum, product) => sum + product.price * product.stock,
+            0
+          ),
+        };
+      })
+    );
+
+    return res
+      .status(200)
+      .json(GenRes(200, vendorStats, null, "Vendor statistics retrieved"));
+  } catch (error) {
+    return res.status(500).json(GenRes(500, null, error, error.message));
+  }
+};
+
+// Delete user content
+const DeleteUserContent = async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res
+        .status(403)
+        .json(
+          GenRes(
+            403,
+            null,
+            { error: "Not authorized" },
+            "Only admins can delete content"
+          )
+        );
+    }
+
+    const { contentId, reason } = req.body;
+
+    if (!contentId || !reason) {
+      return res
+        .status(400)
+        .json(
+          GenRes(
+            400,
+            null,
+            { error: "Missing required fields" },
+            "Please provide all required fields"
+          )
+        );
+    }
+
+    const content = await Content.findById(contentId);
+    if (!content) {
+      return res
+        .status(404)
+        .json(
+          GenRes(404, null, { error: "Content not found" }, "Content not found")
+        );
+    }
+
+    await Content.findByIdAndDelete(contentId);
+
+    await transporter.sendMail({
+      from: process.env.EMAIL,
+      to: content.author.email,
+      subject: "Content Removed - Policy Violation",
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px;">
+          <h2>Content Removal Notice</h2>
+          <p>Dear ${content.author.name},</p>
+          <p>Your content has been removed for the following reason:</p>
+          <div style="background-color: #f5f5f5; padding: 15px; border-radius: 5px; margin: 20px 0;">
+            <p>${reason}</p>
+          </div>
+          <p>Please review our community guidelines to avoid future violations.</p>
+          <p>Best regards,<br>The Admin Team</p>
+        </div>
+      `,
+    });
+
+    return res
+      .status(200)
+      .json(
+        GenRes(
+          200,
+          { message: "Content deleted successfully" },
+          null,
+          "Content deleted"
+        )
+      );
+  } catch (error) {
+    return res.status(500).json(GenRes(500, null, error, error.message));
+  }
+};
+
+// Handle advertisement requests
+const HandleAdRequest = async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res
+        .status(403)
+        .json(
+          GenRes(
+            403,
+            null,
+            { error: "Not authorized" },
+            "Only admins can handle ad requests"
+          )
+        );
+    }
+
+    const { adId, status, message } = req.body;
+
+    const ad = await Advertisement.findById(adId);
+    if (!ad) {
+      return res
+        .status(404)
+        .json(
+          GenRes(
+            404,
+            null,
+            { error: "Advertisement not found" },
+            "Advertisement not found"
+          )
+        );
+    }
+
+    ad.status = status;
+    await ad.save();
+
+    // Send notification to advertiser
+    await transporter.sendMail({
+      from: process.env.EMAIL,
+      to: ad.advertiser.email,
+      subject: `Advertisement ${
+        status.charAt(0).toUpperCase() + status.slice(1)
+      }`,
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px;">
+          <h2>Advertisement Update</h2>
+          <p>Dear ${ad.advertiser.name},</p>
+          <p>Your advertisement request has been ${status}.</p>
+          ${message ? `<p>Message from admin: ${message}</p>` : ""}
+          <p>Advertisement Details:</p>
+          <div style="background-color: #f5f5f5; padding: 15px; border-radius: 5px; margin: 20px 0;">
+            <p><strong>Title:</strong> ${ad.title}</p>
+            <p><strong>Duration:</strong> ${ad.duration.start.toLocaleDateString()} - ${ad.duration.end.toLocaleDateString()}</p>
+            <p><strong>Budget:</strong> ${ad.budget.amount} ${
+        ad.budget.currency
+      }</p>
+          </div>
+          <p>Best regards,<br>The Admin Team</p>
+        </div>
+      `,
+    });
+
+    return res
+      .status(200)
+      .json(
+        GenRes(
+          200,
+          { message: "Advertisement status updated" },
+          null,
+          "Status updated successfully"
+        )
+      );
+  } catch (error) {
+    return res.status(500).json(GenRes(500, null, error, error.message));
+  }
+};
+
+// Get advertisement statistics
+const GetAdStats = async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res
+        .status(403)
+        .json(
+          GenRes(
+            403,
+            null,
+            { error: "Not authorized" },
+            "Only admins can view ad statistics"
+          )
+        );
+    }
+
+    const stats = await Advertisement.aggregate([
+      {
+        $group: {
+          _id: "$status",
+          count: { $sum: 1 },
+          totalBudget: { $sum: "$budget.amount" },
+          totalViews: { $sum: "$metrics.views" },
+          totalClicks: { $sum: "$metrics.clicks" },
+        },
+      },
+    ]);
+
+    return res
+      .status(200)
+      .json(GenRes(200, stats, null, "Advertisement statistics retrieved"));
+  } catch (error) {
+    return res.status(500).json(GenRes(500, null, error, error.message));
+  }
+};
+
+module.exports = {
+  AddVendor,
+  GetUserStats,
+  GetLeaderboard,
+  BanUser,
+  GetVendorStats,
+  DeleteUserContent,
+  HandleAdRequest,
+  GetAdStats,
+};

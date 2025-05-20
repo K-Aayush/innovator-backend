@@ -25,10 +25,33 @@ const loginUser = async (req, res) => {
       const response = GenRes(
         404,
         null,
-        { error: "User not registerred!" },
+        { error: "User not registered!" },
         "User not found"
       );
       return res.status(404).json(response);
+    }
+
+    // Check if user is banned
+    if (userData.banned) {
+      if (userData.banEndDate > new Date()) {
+        const response = GenRes(
+          403,
+          null,
+          {
+            error: "Account suspended",
+            banEndDate: userData.banEndDate,
+            reason: userData.banReason,
+          },
+          `Account suspended until ${userData.banEndDate.toLocaleDateString()}`
+        );
+        return res.status(403).json(response);
+      } else {
+        // If ban period is over, remove ban
+        userData.banned = false;
+        userData.banEndDate = null;
+        userData.banReason = null;
+        await userData.save();
+      }
     }
 
     // check password
@@ -43,7 +66,7 @@ const loginUser = async (req, res) => {
         401,
         null,
         { error: "Incorrect Credentials [PASSWORD DIDNT MATCH]" },
-        "Incorrect Credentaials"
+        "Incorrect Credentials"
       );
       return res.status(401).json(response);
     }
@@ -67,8 +90,8 @@ const loginUser = async (req, res) => {
     const saveData = GenRes(200, obj, null, "Logged in");
     return res.status(200).json({ ...saveData, accessToken });
   } catch (error) {
-    const respones = GenRes(500, null, error, error?.message);
-    return res.status(500).json(respones);
+    const response = GenRes(500, null, error, error?.message);
+    return res.status(500).json(response);
   }
 };
 

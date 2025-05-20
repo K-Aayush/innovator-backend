@@ -141,7 +141,6 @@ const AddShop = async (req, res) => {
         .json(GenRes(400, null, null, "Category is required"));
     }
 
-    // Verify category
     const category = await Category.findOne({
       _id: data.categoryId,
       "vendor._id": req.vendor._id,
@@ -163,7 +162,6 @@ const AddShop = async (req, res) => {
         .json(GenRes(400, null, null, "At least one image is required"));
     }
 
-    // Prepare shop data
     const shopData = {
       name: data.name,
       description: data.description,
@@ -184,10 +182,10 @@ const AddShop = async (req, res) => {
 
     const newShop = new Shop(shopData);
     await newShop.save();
+    console.log("Saved shop images:", newShop.images);
     return res.status(201).json(GenRes(201, newShop, null, "New shop added"));
   } catch (error) {
     console.error("Error in AddShop:", error);
-    // Clean up uploaded files on error
     if (req.file_locations?.length > 0) {
       for (const file of req.file_locations) {
         try {
@@ -266,7 +264,6 @@ const UpdateProduct = async (req, res) => {
     const data = req?.body;
     const fileLocations = req?.file_locations || [];
 
-    // Validate product ID
     if (!_id || !isValidObjectId(_id)) {
       return res
         .status(400)
@@ -275,7 +272,6 @@ const UpdateProduct = async (req, res) => {
         );
     }
 
-    // Validate required fields
     if (!data.name || !data.description || !data.price || !data.stock) {
       return res
         .status(400)
@@ -289,7 +285,6 @@ const UpdateProduct = async (req, res) => {
         );
     }
 
-    // Find the product with vendor check
     const filters = { _id };
     if (req.vendor) {
       filters["vendor._id"] = req.vendor._id;
@@ -300,7 +295,6 @@ const UpdateProduct = async (req, res) => {
       return res.status(404).json(GenRes(404, null, null, "Product not found"));
     }
 
-    // Validate category if provided
     if (data.categoryId) {
       if (!isValidObjectId(data.categoryId)) {
         return res
@@ -339,16 +333,13 @@ const UpdateProduct = async (req, res) => {
       };
     }
 
-    // Update product fields
     product.name = data.name;
     product.description = data.description;
     product.price = Number(data.price);
     product.stock = Number(data.stock);
     product.content = data.content || product.content;
 
-    // Handle images
     if (fileLocations.length > 0) {
-      // Delete old images
       if (product.images && product.images.length > 0) {
         const failedFiles = [];
         for (const oldImage of product.images) {
@@ -364,20 +355,16 @@ const UpdateProduct = async (req, res) => {
         }
       }
 
-      // Update with new images
       product.images = fileLocations;
     }
 
-    // Save the updated product
     await product.save();
-
+    console.log("Updated product images:", product.images); // Debug
     return res
       .status(200)
       .json(GenRes(200, product, null, "Product updated successfully"));
   } catch (error) {
     console.error("Error in UpdateProduct:", error);
-
-    // Clean up uploaded files if update fails
     if (req?.file_locations?.length > 0) {
       for (const file of req.file_locations) {
         try {
@@ -390,7 +377,6 @@ const UpdateProduct = async (req, res) => {
         }
       }
     }
-
     return res.status(500).json(GenRes(500, null, error, error?.message));
   }
 };

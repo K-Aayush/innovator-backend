@@ -51,7 +51,6 @@ const ListShop = async (req, res) => {
       .sort({ _id: -1 })
       .skip(page * fetchLimit)
       .limit(fetchLimit)
-      .select("-content")
       .lean();
 
     const validProducts = recentProducts.filter(
@@ -337,7 +336,8 @@ const UpdateProduct = async (req, res) => {
     product.description = data.description;
     product.price = Number(data.price);
     product.stock = Number(data.stock);
-    product.content = data.content || product.content;
+    product.content =
+      data.content !== undefined ? data.content : product.content;
 
     if (fileLocations.length > 0) {
       if (product.images && product.images.length > 0) {
@@ -359,7 +359,7 @@ const UpdateProduct = async (req, res) => {
     }
 
     await product.save();
-    console.log("Updated product images:", product.images); // Debug
+    console.log("Updated product images:", product.images);
     return res
       .status(200)
       .json(GenRes(200, product, null, "Product updated successfully"));

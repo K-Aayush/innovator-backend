@@ -97,7 +97,7 @@ const MarkAllAsRead = async (req, res) => {
   try {
     const result = await Notification.updateMany(
       {
-        "recipient._id": req.user._id,
+        recipient: req.user._id, // fixed here
         read: false,
       },
       {

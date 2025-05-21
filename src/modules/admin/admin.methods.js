@@ -4,7 +4,138 @@ const Shop = require("../shop/shop.model");
 const transporter = require("../../config/Mailer");
 const GenRes = require("../../utils/routers/GenRes");
 
-// Add vendor 
+// Get all users with pagination and filtering
+const GetUsers = async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res
+        .status(403)
+        .json(
+          GenRes(
+            403,
+            null,
+            { error: "Not authorized" },
+            "Only admins can view users"
+          )
+        );
+    }
+
+    const page = parseInt(req.query.page) || 0;
+    const limit = parseInt(req.query.limit) || 20;
+    const search = req.query.search;
+    const role = req.query.role;
+    const status = req.query.status;
+
+    const query = {};
+
+    if (search) {
+      query.$or = [
+        { email: { $regex: search, $options: "i" } },
+        { name: { $regex: search, $options: "i" } },
+      ];
+    }
+
+    if (role) {
+      query.role = role;
+    }
+
+    if (status === "banned") {
+      query.banned = true;
+    } else if (status === "active") {
+      query.banned = { $ne: true };
+    }
+
+    const [users, total] = await Promise.all([
+      User.find(query)
+        .select("-password -refreshToken")
+        .sort({ createdAt: -1 })
+        .skip(page * limit)
+        .limit(limit)
+        .lean(),
+      User.countDocuments(query),
+    ]);
+
+    return res.status(200).json(
+      GenRes(
+        200,
+        {
+          users,
+          total,
+          page,
+          pages: Math.ceil(total / limit),
+        },
+        null,
+        "Users retrieved successfully"
+      )
+    );
+  } catch (error) {
+    return res.status(500).json(GenRes(500, null, error, error.message));
+  }
+};
+
+// Get user details with their content
+const GetUserDetails = async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res
+        .status(403)
+        .json(
+          GenRes(
+            403,
+            null,
+            { error: "Not authorized" },
+            "Only admins can view user details"
+          )
+        );
+    }
+
+    const { userId } = req.params;
+
+    if (!isValidObjectId(userId)) {
+      return res
+        .status(400)
+        .json(
+          GenRes(
+            400,
+            null,
+            { error: "Invalid user ID" },
+            "Invalid user ID provided"
+          )
+        );
+    }
+
+    const user = await User.findById(userId)
+      .select("-password -refreshToken")
+      .lean();
+    if (!user) {
+      return res
+        .status(404)
+        .json(GenRes(404, null, { error: "User not found" }, "User not found"));
+    }
+
+    const [contents, products] = await Promise.all([
+      Content.find({ "author._id": userId }).lean(),
+      Shop.find({ "vendor._id": userId }).lean(),
+    ]);
+
+    return res.status(200).json(
+      GenRes(
+        200,
+        {
+          user,
+          contents,
+          products,
+        },
+        null,
+        "User details retrieved successfully"
+      )
+    );
+  } catch (error) {
+    return res.status(500).json(GenRes(500, null, error, error.message));
+  }
+};
+
+// Add vendor
 const AddVendor = async (req, res) => {
   try {
     if (req.user.role !== "admin") {
@@ -491,6 +622,8 @@ const GetAdStats = async (req, res) => {
 };
 
 module.exports = {
+  GetUsers,
+  GetUserDetails,
   AddVendor,
   GetUserStats,
   GetLeaderboard,

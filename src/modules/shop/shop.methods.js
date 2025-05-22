@@ -14,6 +14,89 @@ function shuffleArray(array) {
   return array;
 }
 
+const ListPublicShop = async (req, res) => {
+  try {
+    const query = req?.query?.search;
+    const categoryId = req?.query?.category;
+    const page = parseInt(req?.query?.page || "0") || 0;
+    const fetchLimit = 20;
+
+    const filters = {
+      category: { $exists: true, $ne: null },
+      "category._id": { $exists: true, $ne: "" },
+      "category.name": { $exists: true, $ne: "" },
+    };
+
+    if (query) {
+      filters.$or = [
+        { name: { $regex: query, $options: "i" } },
+        { description: { $regex: query, $options: "i" } },
+        { "category.name": { $regex: query, $options: "i" } },
+      ];
+    }
+    if (categoryId) {
+      filters["category._id"] = categoryId;
+    }
+
+    const [products, total] = await Promise.all([
+      Shop.find(filters)
+        .sort({ _id: -1 })
+        .skip(page * fetchLimit)
+        .limit(fetchLimit)
+        .lean(),
+      Shop.countDocuments(filters),
+    ]);
+
+    const validProducts = products.filter(
+      (product) =>
+        product.category && product.category._id && product.category.name
+    );
+
+    return res.status(200).json(
+      GenRes(
+        200,
+        {
+          products: validProducts,
+          total,
+          page,
+          pages: Math.ceil(total / fetchLimit),
+          hasMore: (page + 1) * fetchLimit < total,
+        },
+        null,
+        "Products retrieved successfully"
+      )
+    );
+  } catch (error) {
+    console.error("Error in ListPublicShop:", error);
+    return res
+      .status(500)
+      .json(GenRes(500, null, error, "Failed to fetch products"));
+  }
+};
+
+const GetPublicShop = async (req, res) => {
+  try {
+    const _id = req?.params?.id;
+    if (!_id || !isValidObjectId(_id)) {
+      return res
+        .status(400)
+        .json(GenRes(400, null, null, "Invalid product ID"));
+    }
+
+    const product = await Shop.findById(_id).lean();
+    if (!product) {
+      return res.status(404).json(GenRes(404, null, null, "Product not found"));
+    }
+
+    return res
+      .status(200)
+      .json(GenRes(200, product, null, "Product retrieved successfully"));
+  } catch (error) {
+    console.error("Error in GetPublicShop:", error);
+    return res.status(500).json(GenRes(500, null, error, error?.message));
+  }
+};
+
 const ListShop = async (req, res) => {
   try {
     const query = req?.query?.search;
@@ -518,4 +601,6 @@ module.exports = {
   SingleShop,
   ReStock,
   DeleteProduct,
+  ListPublicShop,
+  GetPublicShop,
 };

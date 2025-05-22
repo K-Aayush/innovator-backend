@@ -11,6 +11,8 @@ const {
   RemoveFromCart,
   DeleteFiles,
   SingleShop,
+  GetPublicShop,
+  ListPublicShop,
   ReStock,
   DeleteProduct,
 } = require("./shop.methods");
@@ -28,8 +30,8 @@ router.put("/vendor-update-category/:id", vendorMiddleware, UpdateCategory);
 router.delete("/vendor-delete-category/:id", vendorMiddleware, DeleteCategory);
 
 // Public shop routes
-router.get("/list-shops/:page", basicMiddleware, ListShop);
-router.get("/get-shop/:id", basicMiddleware, SingleShop);
+router.get("/products", ListPublicShop);
+router.get("/products/:id", GetPublicShop);
 
 // Vendor shop management routes
 router.get("/vendor-list-shops/:page", vendorMiddleware, ListShop);

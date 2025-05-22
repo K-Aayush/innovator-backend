@@ -2,25 +2,53 @@ const { tokenGen } = require("../../utils/auth/tokenHandler");
 const GenRes = require("../../utils/routers/GenRes");
 const User = require("./user.model");
 const bcrypt = require("bcryptjs");
+const path = require("path");
+const fs = require("fs");
 
 const loginUser = async (req, res) => {
   try {
-    const email = req?.body?.email?.toLowerCase();
+    const email = req?.body?.email?.toLowerCase() || req?.user?.email;
     const password = req?.body?.password;
 
-    // 400
-    if (!email || !password) {
+    // 400: Check for valid input
+    if (!req.user && (!email || !password)) {
       const response = GenRes(
         400,
         null,
-        { error: "Email and Password is required!" },
-        "400 | Email or password not Found"
+        { error: "Email and Password or Firebase token is required!" },
+        "400 | Email/Password or Firebase token not found"
       );
       return res.status(400).json(response);
     }
 
-    //
-    const userData = await User.findOne({ email });
+    // Find user by email
+    let userData = await User.findOne({ email });
+
+    // If user doesn't exist and Firebase token is provided, create a new user
+    if (!userData && req.user) {
+      const newData = {
+        email: req.user.email,
+        name: req.user.name || req.user.email.split("@")[0],
+        picture: req.user.picture || "",
+        uid: req.user.uid,
+        dob: req.user.dob || new Date("2000-01-01"),
+        phone: req.user.phone || "Not provided",
+        level: "bronze",
+        role: "user",
+      };
+      userData = new User(newData);
+      await userData.save();
+
+      // Create user directory (consistent with RegisterUser)
+      try {
+        const joinedPath = path.join(process.cwd(), "Uploads", email);
+        fs.mkdirSync(joinedPath, { recursive: true });
+      } catch (err) {
+        console.error("Error creating user directory:", err);
+      }
+    }
+
+    // If user still doesn't exist, return error
     if (!userData) {
       const response = GenRes(
         404,
@@ -54,25 +82,30 @@ const loginUser = async (req, res) => {
       }
     }
 
-    // check password
-    const isCorrectPassword = await bcrypt.compare(
-      password,
-      userData?.password
-    );
-
-    //respond after check password
-    if (!isCorrectPassword) {
-      const response = GenRes(
-        401,
-        null,
-        { error: "Incorrect Credentials [PASSWORD DIDNT MATCH]" },
-        "Incorrect Credentials"
+    // Check password for non-Firebase login
+    if (!req.user && password) {
+      const isCorrectPassword = await bcrypt.compare(
+        password,
+        userData?.password
       );
-      return res.status(401).json(response);
+      if (!isCorrectPassword) {
+        const response = GenRes(
+          401,
+          null,
+          { error: "Incorrect Credentials [PASSWORD DIDNT MATCH]" },
+          "Incorrect Credentials"
+        );
+        return res.status(401).json(response);
+      }
     }
 
-    userData.signedIn = [...userData?.signedIn, new Date()?.toDateString()];
+    // Update signedIn history
+    userData.signedIn = [
+      ...(userData?.signedIn || []),
+      new Date().toDateString(),
+    ];
 
+    // Generate tokens
     const genData = {
       email: userData?.email,
       _id: userData?._id?.toString(),
@@ -83,10 +116,13 @@ const loginUser = async (req, res) => {
     const { refreshToken, accessToken } = tokenGen(genData);
     userData.refreshToken = refreshToken;
     await userData.save();
+
+    // Prepare response data
     const obj = userData.toObject();
     delete obj.signedIn;
     delete obj.password;
     delete obj.refreshToken;
+
     const saveData = GenRes(200, obj, null, "Logged in");
     return res.status(200).json({ ...saveData, accessToken });
   } catch (error) {

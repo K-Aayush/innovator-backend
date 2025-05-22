@@ -1,5 +1,8 @@
 const basicMiddleware = require("../../middlewares/basicMiddleware");
-const { registerMiddleware } = require("../../middlewares/firebaseMiddleware");
+const {
+  registerMiddleware,
+  optionalFirebaseMiddleware,
+} = require("../../middlewares/firebaseMiddleware");
 const UserFiles = require("../../utils/fileProcessor/multer.users");
 const LoginUser = require("./user.login");
 const {
@@ -20,12 +23,11 @@ router.get("/user-exist", UserExist);
 router.get("/user-profile", basicMiddleware, UserProfile);
 router.get("/stalk-profile/:id", basicMiddleware, StalkProfile);
 
-
 // post req
 router.post("/register-user", registerMiddleware, RegisterUser);
 router.post("/send-otp", NewOtp);
 router.post("/forget-password", SetPassword);
-router.post("/login", LoginUser);
+router.post("/login", optionalFirebaseMiddleware, LoginUser);
 
 // update reqs
 router.post(

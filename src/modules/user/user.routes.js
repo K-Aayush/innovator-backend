@@ -13,6 +13,7 @@ const {
   SetAvatar,
   SetDetails,
   StalkProfile,
+  GetAllUsers,
 } = require("./user.methods");
 const RegisterUser = require("./user.register");
 
@@ -20,6 +21,7 @@ const router = require("express").Router();
 
 // get request
 router.get("/user-exist", UserExist);
+router.get("/users", GetAllUsers);
 router.get("/user-profile", basicMiddleware, UserProfile);
 router.get("/stalk-profile/:id", basicMiddleware, StalkProfile);
 

@@ -28,6 +28,44 @@ const UserExist = async (req, res) => {
   }
 };
 
+// get all users
+const GetAllUsers = async (req, res) => {
+  try {
+    const data = await User.find()
+      .select("-password -refreshToken -role -signedIn -createdAt")
+      .lean();
+
+    if (!data || data.length === 0) {
+      return res
+        .status(404)
+        .json(GenRes(404, null, { error: "No users found!" }, "Not found"));
+    }
+
+    // Add follower and following counts for each user
+    const users = await Promise.all(
+      data.map(async (user) => {
+        const followers = await Follow.countDocuments({
+          "following._id": user._id,
+        });
+        const following = await Follow.countDocuments({
+          "follower._id": user._id,
+        });
+        return {
+          ...user,
+          followers,
+          following,
+        };
+      })
+    );
+
+    return res
+      .status(200)
+      .json(GenRes(200, users, null, "All Users Retrieved"));
+  } catch (error) {
+    return res.status(500).json(GenRes(500, null, error, error?.message));
+  }
+};
+
 // get profile
 const UserProfile = async (req, res) => {
   try {
@@ -62,7 +100,6 @@ const UserProfile = async (req, res) => {
     return res.status(500).json(GenRes(500, null, error, error?.message));
   }
 };
-
 
 // verify
 const NewOtp = async (req, res) => {
@@ -231,6 +268,7 @@ const StalkProfile = async (req, res) => {
 
 module.exports = {
   UserExist,
+  GetAllUsers,
   UserProfile,
   NewOtp,
   SetPassword,

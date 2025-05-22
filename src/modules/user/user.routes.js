@@ -26,7 +26,7 @@ router.get("/user-profile", basicMiddleware, UserProfile);
 router.get("/stalk-profile/:id", basicMiddleware, StalkProfile);
 
 // post req
-router.post("/register-user", registerMiddleware, RegisterUser);
+router.post("/register-user", RegisterUser);
 router.post("/send-otp", NewOtp);
 router.post("/forget-password", SetPassword);
 router.post("/login", optionalFirebaseMiddleware, LoginUser);

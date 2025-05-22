@@ -5,16 +5,16 @@ const User = require("../modules/user/user.model");
 
 const firebaseMiddleware = async (req, res, next) => {
   try {
-    const rawToken = req.headers.authorization;
-    const token = rawToken?.startsWith("Bearer ")
-      ? rawToken.split("Bearer ")[1]
-      : rawToken;
+    const token = req.headers.authorization || req.body.firebaseToken;
 
     if (!token) {
       return res.status(401).json(GenRes(401, null, null, "Token not found!"));
     }
 
-    const decodedToken = await firebaseAdmin.auth().verifyIdToken(token);
+    const cleanToken = token.startsWith("Bearer ")
+      ? token.split("Bearer ")[1]
+      : token;
+    const decodedToken = await firebaseAdmin.auth().verifyIdToken(cleanToken);
 
     if (!decodedToken || !decodedToken.email) {
       return res
@@ -54,7 +54,7 @@ const firebaseMiddleware = async (req, res, next) => {
     req.user = {
       ...decodedToken,
       _id: user._id,
-      role: "user",
+      role: user.role,
     };
 
     return next();
@@ -68,17 +68,17 @@ const firebaseMiddleware = async (req, res, next) => {
 
 const optionalFirebaseMiddleware = async (req, res, next) => {
   try {
-    const rawToken = req.headers.authorization;
-    const token = rawToken?.startsWith("Bearer ")
-      ? rawToken.split("Bearer ")[1]
-      : rawToken;
+    const token = req.headers.authorization || req.body.firebaseToken;
 
     if (!token) {
       req.user = null;
       return next();
     }
 
-    const decodedToken = await firebaseAdmin.auth().verifyIdToken(token);
+    const cleanToken = token.startsWith("Bearer ")
+      ? token.split("Bearer ")[1]
+      : token;
+    const decodedToken = await firebaseAdmin.auth().verifyIdToken(cleanToken);
 
     if (!decodedToken || !decodedToken.email) {
       req.user = null;
@@ -117,7 +117,7 @@ const optionalFirebaseMiddleware = async (req, res, next) => {
     req.user = {
       ...decodedToken,
       _id: user._id,
-      role: "user",
+      role: user.role,
     };
 
     return next();
@@ -131,15 +131,20 @@ const optionalFirebaseMiddleware = async (req, res, next) => {
 const registerMiddleware = async (req, _, next) => {
   req.user = null;
   try {
-    const token = req?.headers?.authorization;
+    const token = req.headers.authorization || req.body.firebaseToken;
     if (!token) {
-      throw new Error("Token not found!");
+      return next();
     }
 
-    const decodedToken = await firebaseAdmin.auth().verifyIdToken(token);
+    const cleanToken = token.startsWith("Bearer ")
+      ? token.split("Bearer ")[1]
+      : token;
+    const decodedToken = await firebaseAdmin.auth().verifyIdToken(cleanToken);
+
     if (!decodedToken) {
-      throw new Error("Firebase failed to parse!");
+      return next();
     }
+
     req.user = {
       ...decodedToken,
       role: "user",

@@ -1,5 +1,5 @@
-const { tokenGen } = require("../../utils/auth/tokenHandler");
-const GenRes = require("../../utils/routers/GenRes");
+const { tokenGen } = require("../utils/auth/tokenHandler");
+const GenRes = require("../utils/routers/GenRes");
 const User = require("./user.model");
 const bcrypt = require("bcryptjs");
 const path = require("path");
@@ -9,37 +9,43 @@ const loginUser = async (req, res) => {
   try {
     const email = req?.body?.email?.toLowerCase() || req?.user?.email;
     const password = req?.body?.password;
+    const isFirebaseAuth = !!req.user;
 
-    // 400: Check for valid input
-    if (!req.user && (!email || !password)) {
-      const response = GenRes(
-        400,
-        null,
-        { error: "Email and Password or Firebase token is required!" },
-        "400 | Email/Password or Firebase token not found"
-      );
-      return res.status(400).json(response);
+    // Validate input for local authentication
+    if (!isFirebaseAuth && (!email || !password)) {
+      return res
+        .status(400)
+        .json(
+          GenRes(
+            400,
+            null,
+            { error: "Email and Password required for local login" },
+            "Email/Password required"
+          )
+        );
     }
 
     // Find user by email
     let userData = await User.findOne({ email });
 
-    // If user doesn't exist and Firebase token is provided, create a new user
-    if (!userData && req.user) {
+    // Handle Firebase authentication: create new user if not found
+    if (!userData && isFirebaseAuth) {
       const newData = {
         email: req.user.email,
         name: req.user.name || req.user.email.split("@")[0],
         picture: req.user.picture || "",
         uid: req.user.uid,
-        dob: req.user.dob || new Date("2000-01-01"),
-        phone: req.user.phone || "Not provided",
+        dob: new Date("2000-01-01"),
+        phone: "Not provided",
         level: "bronze",
         role: "user",
+        isVerified: false,
+        signedIn: [new Date()],
       };
       userData = new User(newData);
       await userData.save();
 
-      // Create user directory (consistent with RegisterUser)
+      // Create user directory
       try {
         const joinedPath = path.join(process.cwd(), "Uploads", email);
         fs.mkdirSync(joinedPath, { recursive: true });
@@ -48,21 +54,19 @@ const loginUser = async (req, res) => {
       }
     }
 
-    // If user still doesn't exist, return error
+    // If user still not found (local auth case)
     if (!userData) {
-      const response = GenRes(
-        404,
-        null,
-        { error: "User not registered!" },
-        "User not found"
-      );
-      return res.status(404).json(response);
+      return res
+        .status(404)
+        .json(
+          GenRes(404, null, { error: "User not registered!" }, "User not found")
+        );
     }
 
-    // Check if user is banned
-    if (userData.banned) {
-      if (userData.banEndDate > new Date()) {
-        const response = GenRes(
+    // Check ban status
+    if (userData.banned && userData.banEndDate > new Date()) {
+      return res.status(403).json(
+        GenRes(
           403,
           null,
           {
@@ -71,63 +75,75 @@ const loginUser = async (req, res) => {
             reason: userData.banReason,
           },
           `Account suspended until ${userData.banEndDate.toLocaleDateString()}`
-        );
-        return res.status(403).json(response);
-      } else {
-        // If ban period is over, remove ban
-        userData.banned = false;
-        userData.banEndDate = null;
-        userData.banReason = null;
-        await userData.save();
-      }
+        )
+      );
+    } else if (userData.banned) {
+      // Clear ban if expired
+      userData.banned = false;
+      userData.banEndDate = null;
+      userData.banReason = null;
+      await userData.save();
     }
 
-    // Check password for non-Firebase login
-    if (!req.user && password) {
+    // Validate password for local authentication
+    if (!isFirebaseAuth) {
+      if (!userData.password) {
+        return res
+          .status(400)
+          .json(
+            GenRes(
+              400,
+              null,
+              { error: "No password set for local authentication" },
+              "Password required"
+            )
+          );
+      }
       const isCorrectPassword = await bcrypt.compare(
         password,
-        userData?.password
+        userData.password
       );
       if (!isCorrectPassword) {
-        const response = GenRes(
-          401,
-          null,
-          { error: "Incorrect Credentials [PASSWORD DIDNT MATCH]" },
-          "Incorrect Credentials"
-        );
-        return res.status(401).json(response);
+        return res
+          .status(401)
+          .json(
+            GenRes(
+              401,
+              null,
+              { error: "Incorrect password" },
+              "Incorrect credentials"
+            )
+          );
       }
     }
 
-    // Update signedIn history
-    userData.signedIn = [
-      ...(userData?.signedIn || []),
-      new Date().toDateString(),
-    ];
+    // Update signedIn dates
+    userData.signedIn = [...(userData?.signedIn || []), new Date()];
 
     // Generate tokens
     const genData = {
-      email: userData?.email,
-      _id: userData?._id?.toString(),
-      phone: userData?.phone,
+      email: userData.email,
+      _id: userData._id.toString(),
+      phone: userData.phone,
       date: new Date(),
     };
-
     const { refreshToken, accessToken } = tokenGen(genData);
     userData.refreshToken = refreshToken;
     await userData.save();
 
     // Prepare response data
     const obj = userData.toObject();
-    delete obj.signedIn;
     delete obj.password;
     delete obj.refreshToken;
+    delete obj.signedIn;
 
-    const saveData = GenRes(200, obj, null, "Logged in");
-    return res.status(200).json({ ...saveData, accessToken });
+    return res.status(200).json({
+      ...GenRes(200, obj, null, "Logged in successfully"),
+      accessToken,
+      refreshToken,
+    });
   } catch (error) {
-    const response = GenRes(500, null, error, error?.message);
-    return res.status(500).json(response);
+    return res.status(500).json(GenRes(500, null, error, error?.message));
   }
 };
 

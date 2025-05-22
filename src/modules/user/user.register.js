@@ -5,25 +5,10 @@ const GenRes = require("../../utils/routers/GenRes");
 
 const RegisterUser = async (req, res) => {
   try {
-    const email = req?.body?.email?.toLowerCase() || req?.user?.email;
+    const email = req?.body?.email?.toLowerCase();
     const userExist = await User.findOne({ email });
 
     if (userExist) {
-      if (req?.user?.uid && !userExist.uid) {
-        userExist.uid = req.user.uid;
-        userExist.picture = req.user.picture || userExist.picture;
-        userExist.name = req.user.name || userExist.name;
-        await userExist.save();
-
-        const response = GenRes(
-          200,
-          userExist,
-          null,
-          "User updated with Google data"
-        );
-        return res.status(200).json(response);
-      }
-
       const err = GenRes(
         409,
         null,
@@ -34,12 +19,11 @@ const RegisterUser = async (req, res) => {
     }
 
     const newData = {
-      ...(req?.user || req?.body),
+      ...req?.body,
       level: "bronze",
       role: "user",
-      dob: req?.user?.dob || new Date("2000-01-01"),
-      phone: req?.user?.phone || "Not provided",
-      picture: req?.user?.picture || "",
+      dob: new Date("2000-01-01"),
+      phone: "Not provided",
     };
 
     const newUser = new User(newData);

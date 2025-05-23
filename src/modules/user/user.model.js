@@ -28,6 +28,7 @@ const UserSchema = new Schema(
     uid: gen.unique(String, { required: false }),
     password: String,
     refreshToken: String,
+    fcmTokens: [String], 
 
     // ban status
     banned: { type: Boolean, default: false },
@@ -44,7 +45,6 @@ const UserSchema = new Schema(
     // activity
     signedIn: [Date],
     createdAt: gen.required(Date, { default: new Date() }),
-    // backup mail
   },
   { timeseries: true, timestamps: true }
 );

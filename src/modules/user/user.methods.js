@@ -4,6 +4,7 @@ const bcrypt = require("bcryptjs");
 const GenRes = require("../../utils/routers/GenRes");
 const Follow = require("../follow/follow.model");
 const { isValidObjectId } = require("mongoose");
+const FCMHandler = require("../../utils/notifications/fcmHandler");
 
 // check if user exists
 const UserExist = async (req, res) => {
@@ -266,6 +267,29 @@ const StalkProfile = async (req, res) => {
   }
 };
 
+const UpdateFCMToken = async (req, res) => {
+  try {
+    const { token } = req.body;
+    const userId = req.user._id;
+
+    if (!token) {
+      return res
+        .status(400)
+        .json(
+          GenRes(400, null, { error: "Token is required" }, "Token is required")
+        );
+    }
+
+    await User.updateOne({ _id: userId }, { $addToSet: { fcmTokens: token } });
+
+    return res
+      .status(200)
+      .json(GenRes(200, null, null, "FCM token updated successfully"));
+  } catch (error) {
+    return res.status(500).json(GenRes(500, null, error, error.message));
+  }
+};
+
 module.exports = {
   UserExist,
   GetAllUsers,
@@ -275,4 +299,5 @@ module.exports = {
   SetAvatar,
   SetDetails,
   StalkProfile,
+  UpdateFCMToken,
 };

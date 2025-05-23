@@ -1,4 +1,5 @@
 const Notification = require("./notification.model");
+const FCMHandler = require("../../utils/notifications/fcmHandler");
 const GenRes = require("../../utils/routers/GenRes");
 
 const GetNotifications = async (req, res) => {
@@ -29,6 +30,18 @@ const GetNotifications = async (req, res) => {
       "recipient._id": req.user._id,
       read: false,
     });
+
+    // Send FCM notification for unread notifications
+    if (unreadCount > 0) {
+      await FCMHandler.sendToUser(req.user._id, {
+        title: "New Notifications",
+        body: `You have ${unreadCount} unread notifications`,
+        type: "notification_count",
+        data: {
+          unreadCount: unreadCount.toString(),
+        },
+      });
+    }
 
     return res.status(200).json(
       GenRes(

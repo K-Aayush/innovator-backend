@@ -1,3 +1,4 @@
+const router = require("express").Router();
 const basicMiddleware = require("../../middlewares/basicMiddleware");
 const {
   registerMiddleware,
@@ -14,10 +15,9 @@ const {
   SetDetails,
   StalkProfile,
   GetAllUsers,
+  UpdateFCMToken,
 } = require("./user.methods");
 const RegisterUser = require("./user.register");
-
-const router = require("express").Router();
 
 // get request
 router.get("/user-exist", UserExist);
@@ -39,6 +39,9 @@ router.post(
   SetAvatar
 );
 router.post("/set-details", basicMiddleware, SetDetails);
+
+// FCM token route
+router.post("/update-fcm-token", basicMiddleware, UpdateFCMToken);
 
 // return router
 module.exports = router;

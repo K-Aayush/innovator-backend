@@ -706,35 +706,45 @@ const HandleReport = async (req, res) => {
     await report.save();
 
     // Send email notification
-    await transporter.sendMail({
-      from: process.env.EMAIL,
-      to: report.reporter.email,
-      subject: "Update on Your Report",
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px;">
-          <h2>Update on Your Report</h2>
-          <p>Your report regarding ${report.reportedUser.name} has been updated.</p>
-          <p><strong>Status:</strong> ${status}</p>
-          <p><strong>Admin Response:</strong> ${response}</p>
-        </div>
-      `,
-    });
+    try {
+      await transporter.sendMail({
+        from: process.env.EMAIL,
+        to: report.reporter.email,
+        subject: "Update on Your Report",
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px;">
+            <h2>Update on Your Report</h2>
+            <p>Your report regarding ${report.reportedUser.name} has been updated.</p>
+            <p><strong>Status:</strong> ${status}</p>
+            <p><strong>Admin Response:</strong> ${response}</p>
+          </div>
+        `,
+      });
+    } catch (emailError) {
+      console.error("Failed to send email notification:", emailError);
+      // Continue execution even if email fails
+    }
 
     // Send FCM notification
-    await FCMHandler.sendToUser(report.reporter._id, {
-      title: "Report Update",
-      body: `Your report has been updated to: ${status}`,
-      type: "report_update",
-      data: {
-        reportId: report._id.toString(),
-        status,
-      },
-    });
+    try {
+      await FCMHandler.sendToUser(report.reporter._id, {
+        title: "Report Update",
+        body: `Your report has been updated to: ${status}`,
+        type: "report_update",
+        data: {
+          reportId: report._id.toString(),
+          status,
+        },
+      });
+    } catch (fcmError) {
+      console.error("Failed to send FCM notification:", fcmError);
+    }
 
     return res
       .status(200)
       .json(GenRes(200, report, null, "Report handled successfully"));
   } catch (error) {
+    console.error("Error in HandleReport:", error);
     return res.status(500).json(GenRes(500, null, error, error.message));
   }
 };

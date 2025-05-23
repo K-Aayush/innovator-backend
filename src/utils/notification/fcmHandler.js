@@ -7,18 +7,19 @@ class FCMHandler {
       const user = await User.findById(userId).select("fcmTokens").lean();
 
       if (!user?.fcmTokens?.length) {
-        return;
+        console.warn(`No FCM tokens found for user ${userId}`);
+        return { success: false, message: "No FCM tokens available" };
       }
 
       const message = {
         notification: {
           title: notification.title,
           body: notification.body,
-          image: notification.image,
+          image: notification.image || undefined,
         },
         data: {
           type: notification.type,
-          click_action: notification.click_action,
+          click_action: notification.click_action || "",
           ...notification.data,
         },
         android: {
@@ -41,9 +42,12 @@ class FCMHandler {
         tokens: user.fcmTokens,
       };
 
-      const response = await firebaseAdmin.messaging().sendMulticast(message);
+      // Use sendEachForMulticast instead of sendMulticast
+      const response = await firebaseAdmin
+        .messaging()
+        .sendEachForMulticast(message);
 
-      // Remove invalid tokens
+      // Handle invalid tokens
       if (response.failureCount > 0) {
         const invalidTokens = [];
         response.responses.forEach((resp, idx) => {
@@ -57,16 +61,21 @@ class FCMHandler {
             { _id: userId },
             { $pull: { fcmTokens: { $in: invalidTokens } } }
           );
+          console.log(
+            `Removed invalid tokens for user ${userId}:`,
+            invalidTokens
+          );
         }
       }
 
       return response;
     } catch (error) {
       console.error("Error sending FCM notification:", error);
-      throw error;
+      throw error; // Let the caller handle the error
     }
   }
 
+  // Update sendToMultipleUsers similarly
   static async sendToMultipleUsers(userIds, notification) {
     try {
       const users = await User.find({ _id: { $in: userIds } })
@@ -81,18 +90,19 @@ class FCMHandler {
       }, []);
 
       if (!tokens.length) {
-        return;
+        console.warn("No FCM tokens found for users:", userIds);
+        return { success: false, message: "No FCM tokens available" };
       }
 
       const message = {
         notification: {
           title: notification.title,
           body: notification.body,
-          image: notification.image,
+          image: notification.image || undefined,
         },
         data: {
           type: notification.type,
-          click_action: notification.click_action,
+          click_action: notification.click_action || "",
           ...notification.data,
         },
         android: {
@@ -115,9 +125,10 @@ class FCMHandler {
         tokens,
       };
 
-      const response = await firebaseAdmin.messaging().sendMulticast(message);
+      const response = await firebaseAdmin
+        .messaging()
+        .sendEachForMulticast(message);
 
-      // Remove invalid tokens
       if (response.failureCount > 0) {
         const invalidTokens = [];
         response.responses.forEach((resp, idx) => {
@@ -131,6 +142,7 @@ class FCMHandler {
             { fcmTokens: { $in: invalidTokens } },
             { $pull: { fcmTokens: { $in: invalidTokens } } }
           );
+          console.log("Removed invalid tokens:", invalidTokens);
         }
       }
 
@@ -147,11 +159,11 @@ class FCMHandler {
         notification: {
           title: notification.title,
           body: notification.body,
-          image: notification.image,
+          image: notification.image || undefined,
         },
         data: {
           type: notification.type,
-          click_action: notification.click_action,
+          click_action: notification.click_action || "",
           ...notification.data,
         },
         android: {

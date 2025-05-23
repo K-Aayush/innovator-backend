@@ -39,11 +39,11 @@ route.post("/handle-ad", basicMiddleware, HandleAdRequest);
 route.get("/ad-stats", basicMiddleware, GetAdStats);
 
 // Report management
-route.get("/reports", basicMiddleware, GetReports);
-route.post("/handle-report", basicMiddleware, HandleReport);
+route.get("/admin-reports", basicMiddleware, GetReports);
+route.post("/admin-handle-report", basicMiddleware, HandleReport);
 
 // Support ticket management
-route.get("/support-tickets", basicMiddleware, GetSupportTickets);
-route.post("/handle-support", basicMiddleware, HandleSupportTicket);
+route.get("/admin-support-tickets", basicMiddleware, GetSupportTickets);
+route.post("/admin-handle-support", basicMiddleware, HandleSupportTicket);
 
 module.exports = route;

@@ -4,7 +4,7 @@ const bcrypt = require("bcryptjs");
 const GenRes = require("../../utils/routers/GenRes");
 const Follow = require("../follow/follow.model");
 const { isValidObjectId } = require("mongoose");
-const FCMHandler = require("../../utils/notifications/fcmHandler");
+const FCMHandler = require("../../utils/notification/fcmHandler");
 
 // check if user exists
 const UserExist = async (req, res) => {
@@ -96,6 +96,13 @@ const UserProfile = async (req, res) => {
     data.followers = followers;
     data.following = following;
 
+    // Send FCM notification for profile view
+    await FCMHandler.sendToUser(data._id, {
+      title: "Profile Viewed",
+      body: "Someone viewed your profile",
+      type: "profile_view",
+    });
+
     return res.status(200).json(GenRes(200, data, null, "Send User"));
   } catch (error) {
     return res.status(500).json(GenRes(500, null, error, error?.message));
@@ -131,6 +138,14 @@ const SetPassword = async (req, res) => {
     if (!updatedResponse) {
       throw new Error("Update Failed!");
     }
+
+    // Send FCM notification for password change
+    await FCMHandler.sendToUser(updatedResponse._id, {
+      title: "Password Updated",
+      body: "Your password has been successfully updated",
+      type: "password_update",
+    });
+
     return res
       .status(200)
       .json(GenRes(200, null, null, "Updated Successfully "));
@@ -151,13 +166,21 @@ const SetAvatar = async (req, res) => {
 
     const uploaded = await User.findOneAndUpdate(
       { email },
-      { picture: req?.file_location }, // FIX: use direct update, not $or
-      { new: true } // optional: return updated user
+      { picture: req?.file_location },
+      { new: true }
     );
 
     if (!uploaded) {
       throw new Error("Failed to upload Picture.");
     }
+
+    // Send FCM notification for avatar update
+    await FCMHandler.sendToUser(uploaded._id, {
+      title: "Profile Picture Updated",
+      body: "Your profile picture has been successfully updated",
+      type: "avatar_update",
+      image: req?.file_location,
+    });
 
     return res
       .status(200)
@@ -202,6 +225,13 @@ const SetDetails = async (req, res) => {
     if (!updated) {
       throw new Error("500 | Could not save");
     }
+
+    // Send FCM notification for profile update
+    await FCMHandler.sendToUser(updated._id, {
+      title: "Profile Updated",
+      body: "Your profile details have been successfully updated",
+      type: "profile_update",
+    });
 
     const response = GenRes(200, data, null, "Updated Successfully!");
     return res.status(200).json(response);
@@ -258,6 +288,13 @@ const StalkProfile = async (req, res) => {
     profile.friends = !!follower && !!following;
     profile.followers = followers;
     profile.followings = followings;
+
+    // Send FCM notification for profile view
+    await FCMHandler.sendToUser(profile._id, {
+      title: "Profile Viewed",
+      body: "Someone viewed your profile",
+      type: "profile_view",
+    });
 
     const response = GenRes(200, profile, null, "Responding User Profile");
     return res.status(200).json(response);

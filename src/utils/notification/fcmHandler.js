@@ -1,4 +1,5 @@
 const { firebaseAdmin } = require("../../config/firebaseAdmin");
+const User = require("../../modules/user/user.model");
 
 class FCMHandler {
   static async sendToUser(userId, notification) {

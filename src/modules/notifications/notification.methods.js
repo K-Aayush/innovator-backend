@@ -1,5 +1,5 @@
 const Notification = require("./notification.model");
-const FCMHandler = require("../../utils/notifications/fcmHandler");
+const FCMHandler = require("../../utils/notification/fcmHandler");
 const GenRes = require("../../utils/routers/GenRes");
 
 const GetNotifications = async (req, res) => {

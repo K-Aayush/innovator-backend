@@ -1,10 +1,12 @@
 const User = require("./user.model");
+const Report = require("./report.model");
+const Support = require("./support.model");
 const { setCode, verifyCode } = require("../../utils/auth/changePass");
 const bcrypt = require("bcryptjs");
 const GenRes = require("../../utils/routers/GenRes");
 const Follow = require("../follow/follow.model");
 const { isValidObjectId } = require("mongoose");
-const FCMHandler = require("../../utils/notification/fcmHandler");
+const FCMHandler = require("../../utils/notifications/fcmHandler");
 
 // check if user exists
 const UserExist = async (req, res) => {
@@ -327,6 +329,157 @@ const UpdateFCMToken = async (req, res) => {
   }
 };
 
+// Submit a report
+const SubmitReport = async (req, res) => {
+  try {
+    const { reportedUserId, reason, description } = req.body;
+
+    if (!reportedUserId || !reason || !description) {
+      return res
+        .status(400)
+        .json(
+          GenRes(
+            400,
+            null,
+            { error: "Missing required fields" },
+            "Please provide all required fields"
+          )
+        );
+    }
+
+    const reportedUser = await User.findById(reportedUserId).select(
+      "_id email name"
+    );
+    if (!reportedUser) {
+      return res
+        .status(404)
+        .json(
+          GenRes(
+            404,
+            null,
+            { error: "User not found" },
+            "Reported user not found"
+          )
+        );
+    }
+
+    const reporter = await User.findOne({ email: req.user.email }).select(
+      "_id email name"
+    );
+
+    const report = new Report({
+      reporter: reporter.toObject(),
+      reportedUser: reportedUser.toObject(),
+      reason,
+      description,
+    });
+
+    await report.save();
+
+    // Notify admins
+    const admins = await User.find({ role: "admin" });
+    for (const admin of admins) {
+      await FCMHandler.sendToUser(admin._id, {
+        title: "New User Report",
+        body: `New report submitted against ${reportedUser.name}`,
+        type: "new_report",
+        data: {
+          reportId: report._id.toString(),
+        },
+      });
+    }
+
+    return res
+      .status(200)
+      .json(GenRes(200, report, null, "Report submitted successfully"));
+  } catch (error) {
+    return res.status(500).json(GenRes(500, null, error, error.message));
+  }
+};
+
+// Submit support ticket
+const SubmitSupport = async (req, res) => {
+  try {
+    const { subject, message } = req.body;
+
+    if (!subject || !message) {
+      return res
+        .status(400)
+        .json(
+          GenRes(
+            400,
+            null,
+            { error: "Missing required fields" },
+            "Please provide all required fields"
+          )
+        );
+    }
+
+    const user = await User.findOne({ email: req.user.email }).select(
+      "_id email name"
+    );
+
+    const ticket = new Support({
+      user: user.toObject(),
+      subject,
+      message,
+    });
+
+    await ticket.save();
+
+    // Notify admins
+    const admins = await User.find({ role: "admin" });
+    for (const admin of admins) {
+      await FCMHandler.sendToUser(admin._id, {
+        title: "New Support Ticket",
+        body: `New support ticket: ${subject}`,
+        type: "new_support_ticket",
+        data: {
+          ticketId: ticket._id.toString(),
+        },
+      });
+    }
+
+    return res
+      .status(200)
+      .json(GenRes(200, ticket, null, "Support ticket submitted successfully"));
+  } catch (error) {
+    return res.status(500).json(GenRes(500, null, error, error.message));
+  }
+};
+
+// Get user's reports
+const GetUserReports = async (req, res) => {
+  try {
+    const reports = await Report.find({
+      "reporter.email": req.user.email,
+    }).sort({ createdAt: -1 });
+
+    return res
+      .status(200)
+      .json(GenRes(200, reports, null, "Reports retrieved successfully"));
+  } catch (error) {
+    return res.status(500).json(GenRes(500, null, error, error.message));
+  }
+};
+
+// Get user's support tickets
+const GetUserSupport = async (req, res) => {
+  try {
+    const tickets = await Support.find({
+      "user.email": req.user.email,
+    }).sort({ createdAt: -1 });
+
+    return res
+      .status(200)
+      .json(
+        GenRes(200, tickets, null, "Support tickets retrieved successfully")
+      );
+  } catch (error) {
+    return res.status(500).json(GenRes(500, null, error, error.message));
+  }
+};
+
 module.exports = {
   UserExist,
   GetAllUsers,
@@ -337,4 +490,8 @@ module.exports = {
   SetDetails,
   StalkProfile,
   UpdateFCMToken,
+  SubmitReport,
+  SubmitSupport,
+  GetUserReports,
+  GetUserSupport,
 };

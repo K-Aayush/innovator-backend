@@ -1,6 +1,7 @@
 const router = require("express").Router();
 const basicMiddleware = require("../../middlewares/basicMiddleware");
 const {
+  registerMiddleware,
   optionalFirebaseMiddleware,
 } = require("../../middlewares/firebaseMiddleware");
 const UserFiles = require("../../utils/fileProcessor/multer.users");
@@ -15,6 +16,10 @@ const {
   StalkProfile,
   GetAllUsers,
   UpdateFCMToken,
+  SubmitReport,
+  SubmitSupport,
+  GetUserReports,
+  GetUserSupport,
 } = require("./user.methods");
 const RegisterUser = require("./user.register");
 
@@ -42,5 +47,10 @@ router.post("/set-details", basicMiddleware, SetDetails);
 // FCM token route
 router.post("/update-fcm-token", basicMiddleware, UpdateFCMToken);
 
-// return router
+// Report and Support routes
+router.post("/report", basicMiddleware, SubmitReport);
+router.post("/support", basicMiddleware, SubmitSupport);
+router.get("/reports", basicMiddleware, GetUserReports);
+router.get("/support-tickets", basicMiddleware, GetUserSupport);
+
 module.exports = router;

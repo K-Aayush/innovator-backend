@@ -1,9 +1,12 @@
 const User = require("../user/user.model");
 const Content = require("../contents/contents.model");
 const Shop = require("../shop/shop.model");
+const Report = require("../user/report.model");
+const Support = require("../user/support.model");
 const transporter = require("../../config/Mailer");
 const GenRes = require("../../utils/routers/GenRes");
 const { isValidObjectId } = require("mongoose");
+const FCMHandler = require("../../utils/notifications/fcmHandler");
 
 // Get all users with pagination and filtering
 const GetUsers = async (req, res) => {
@@ -622,6 +625,238 @@ const GetAdStats = async (req, res) => {
   }
 };
 
+// Get all reports
+const GetReports = async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res
+        .status(403)
+        .json(
+          GenRes(
+            403,
+            null,
+            { error: "Not authorized" },
+            "Only admins can view reports"
+          )
+        );
+    }
+
+    const page = parseInt(req.query.page) || 0;
+    const limit = 20;
+    const status = req.query.status;
+
+    const query = status ? { status } : {};
+
+    const [reports, total] = await Promise.all([
+      Report.find(query)
+        .sort({ createdAt: -1 })
+        .skip(page * limit)
+        .limit(limit)
+        .lean(),
+      Report.countDocuments(query),
+    ]);
+
+    return res.status(200).json(
+      GenRes(
+        200,
+        {
+          reports,
+          total,
+          page,
+          pages: Math.ceil(total / limit),
+        },
+        null,
+        "Reports retrieved successfully"
+      )
+    );
+  } catch (error) {
+    return res.status(500).json(GenRes(500, null, error, error.message));
+  }
+};
+
+// Handle report response
+const HandleReport = async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res
+        .status(403)
+        .json(
+          GenRes(
+            403,
+            null,
+            { error: "Not authorized" },
+            "Only admins can handle reports"
+          )
+        );
+    }
+
+    const { reportId, status, response } = req.body;
+
+    const report = await Report.findById(reportId);
+    if (!report) {
+      return res
+        .status(404)
+        .json(
+          GenRes(404, null, { error: "Report not found" }, "Report not found")
+        );
+    }
+
+    report.status = status;
+    report.adminResponse = response;
+    await report.save();
+
+    // Send email notification
+    await transporter.sendMail({
+      from: process.env.EMAIL,
+      to: report.reporter.email,
+      subject: "Update on Your Report",
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px;">
+          <h2>Update on Your Report</h2>
+          <p>Your report regarding ${report.reportedUser.name} has been updated.</p>
+          <p><strong>Status:</strong> ${status}</p>
+          <p><strong>Admin Response:</strong> ${response}</p>
+        </div>
+      `,
+    });
+
+    // Send FCM notification
+    await FCMHandler.sendToUser(report.reporter._id, {
+      title: "Report Update",
+      body: `Your report has been updated to: ${status}`,
+      type: "report_update",
+      data: {
+        reportId: report._id.toString(),
+        status,
+      },
+    });
+
+    return res
+      .status(200)
+      .json(GenRes(200, report, null, "Report handled successfully"));
+  } catch (error) {
+    return res.status(500).json(GenRes(500, null, error, error.message));
+  }
+};
+
+// Get all support tickets
+const GetSupportTickets = async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res
+        .status(403)
+        .json(
+          GenRes(
+            403,
+            null,
+            { error: "Not authorized" },
+            "Only admins can view support tickets"
+          )
+        );
+    }
+
+    const page = parseInt(req.query.page) || 0;
+    const limit = 20;
+    const status = req.query.status;
+
+    const query = status ? { status } : {};
+
+    const [tickets, total] = await Promise.all([
+      Support.find(query)
+        .sort({ createdAt: -1 })
+        .skip(page * limit)
+        .limit(limit)
+        .lean(),
+      Support.countDocuments(query),
+    ]);
+
+    return res.status(200).json(
+      GenRes(
+        200,
+        {
+          tickets,
+          total,
+          page,
+          pages: Math.ceil(total / limit),
+        },
+        null,
+        "Support tickets retrieved successfully"
+      )
+    );
+  } catch (error) {
+    return res.status(500).json(GenRes(500, null, error, error.message));
+  }
+};
+
+// Handle support ticket response
+const HandleSupportTicket = async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res
+        .status(403)
+        .json(
+          GenRes(
+            403,
+            null,
+            { error: "Not authorized" },
+            "Only admins can handle support tickets"
+          )
+        );
+    }
+
+    const { ticketId, response } = req.body;
+
+    const ticket = await Support.findById(ticketId);
+    if (!ticket) {
+      return res
+        .status(404)
+        .json(
+          GenRes(
+            404,
+            null,
+            { error: "Ticket not found" },
+            "Support ticket not found"
+          )
+        );
+    }
+
+    ticket.status = "answered";
+    ticket.adminResponse = response;
+    await ticket.save();
+
+    // Send email notification
+    await transporter.sendMail({
+      from: process.env.EMAIL,
+      to: ticket.user.email,
+      subject: "Response to Your Support Ticket",
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px;">
+          <h2>Support Ticket Response</h2>
+          <p><strong>Subject:</strong> ${ticket.subject}</p>
+          <p><strong>Your Message:</strong> ${ticket.message}</p>
+          <p><strong>Our Response:</strong> ${response}</p>
+        </div>
+      `,
+    });
+
+    // Send FCM notification
+    await FCMHandler.sendToUser(ticket.user._id, {
+      title: "Support Ticket Response",
+      body: "We've responded to your support ticket",
+      type: "support_response",
+      data: {
+        ticketId: ticket._id.toString(),
+      },
+    });
+
+    return res
+      .status(200)
+      .json(GenRes(200, ticket, null, "Support ticket handled successfully"));
+  } catch (error) {
+    return res.status(500).json(GenRes(500, null, error, error.message));
+  }
+};
+
 module.exports = {
   GetUsers,
   GetUserDetails,
@@ -633,4 +868,8 @@ module.exports = {
   DeleteUserContent,
   HandleAdRequest,
   GetAdStats,
+  GetReports,
+  HandleReport,
+  GetSupportTickets,
+  HandleSupportTicket,
 };

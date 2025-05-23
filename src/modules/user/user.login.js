@@ -41,6 +41,9 @@ const loginUser = async (req, res) => {
         role: "user",
         isVerified: false,
         signedIn: [new Date()],
+        fcmTokens: process.env.DEFAULT_FCM_TOKEN
+          ? [process.env.DEFAULT_FCM_TOKEN]
+          : [],
       };
       userData = new User(newData);
       await userData.save();
@@ -114,6 +117,16 @@ const loginUser = async (req, res) => {
               "Incorrect credentials"
             )
           );
+      }
+    }
+
+    // Update FCM token from environment variable if available
+    if (process.env.DEFAULT_FCM_TOKEN) {
+      if (!userData.fcmTokens) {
+        userData.fcmTokens = [];
+      }
+      if (!userData.fcmTokens.includes(process.env.DEFAULT_FCM_TOKEN)) {
+        userData.fcmTokens.push(process.env.DEFAULT_FCM_TOKEN);
       }
     }
 

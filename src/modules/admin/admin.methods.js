@@ -6,29 +6,25 @@ const Support = require("../user/support.model");
 const transporter = require("../../config/Mailer");
 const GenRes = require("../../utils/routers/GenRes");
 const { isValidObjectId } = require("mongoose");
-const FCMHandler = require("../../utils/notifications/fcmHandler");
+const FCMHandler = require("../../utils/notification/fcmHandler");
 
 // Get all users with pagination and filtering
 const GetUsers = async (req, res) => {
   try {
     if (req.user.role !== "admin") {
-      return res
-        .status(403)
-        .json(
-          GenRes(
-            403,
-            null,
-            { error: "Not authorized" },
-            "Only admins can view users"
-          )
-        );
+      return res.status(403).json({
+        status: 403,
+        data: null,
+        error: { message: "Not authorized" },
+        message: "Only admins can view users",
+      });
     }
 
-    const page = parseInt(req.query.page) || 0;
-    const limit = parseInt(req.query.limit) || 20;
-    const search = req.query.search;
-    const role = req.query.role;
-    const status = req.query.status;
+    const page = Math.max(0, parseInt(req.query.page) || 0);
+    const limit = Math.max(1, parseInt(req.query.limit) || 20);
+    const search = req.query.search?.trim() || "";
+    const role = req.query.role?.trim() || "";
+    const status = req.query.status?.trim() || "";
 
     const query = {};
 
@@ -59,21 +55,25 @@ const GetUsers = async (req, res) => {
       User.countDocuments(query),
     ]);
 
-    return res.status(200).json(
-      GenRes(
-        200,
-        {
-          users,
-          total,
-          page,
-          pages: Math.ceil(total / limit),
-        },
-        null,
-        "Users retrieved successfully"
-      )
-    );
+    return res.status(200).json({
+      status: 200,
+      data: {
+        users,
+        total,
+        page,
+        pages: Math.ceil(total / limit) || 1,
+      },
+      error: null,
+      message: "Users retrieved successfully",
+    });
   } catch (error) {
-    return res.status(500).json(GenRes(500, null, error, error.message));
+    console.error(error);
+    return res.status(500).json({
+      status: 500,
+      data: null,
+      error: { message: error.message },
+      message: "Internal server error",
+    });
   }
 };
 

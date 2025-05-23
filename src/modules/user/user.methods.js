@@ -6,7 +6,7 @@ const bcrypt = require("bcryptjs");
 const GenRes = require("../../utils/routers/GenRes");
 const Follow = require("../follow/follow.model");
 const { isValidObjectId } = require("mongoose");
-const FCMHandler = require("../../utils/notifications/fcmHandler");
+const FCMHandler = require("../../utils/notification/fcmHandler");
 
 // check if user exists
 const UserExist = async (req, res) => {

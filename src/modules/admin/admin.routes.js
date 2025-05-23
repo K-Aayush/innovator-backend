@@ -19,7 +19,7 @@ const basicMiddleware = require("../../middlewares/basicMiddleware");
 const route = require("express").Router();
 
 // User management
-route.get("/users", basicMiddleware, GetUsers);
+route.get("/admin-users", basicMiddleware, GetUsers);
 route.get("/users/:userId", basicMiddleware, GetUserDetails);
 
 // Vendor management

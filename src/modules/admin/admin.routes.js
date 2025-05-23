@@ -8,7 +8,7 @@ const {
   HandleAdRequest,
   GetAdStats,
   GetUsers,
-  GetUserDetails
+  GetUserDetails,
 } = require("./admin.methods");
 const basicMiddleware = require("../../middlewares/basicMiddleware");
 

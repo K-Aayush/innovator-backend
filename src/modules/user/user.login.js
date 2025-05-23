@@ -1,5 +1,5 @@
-const { tokenGen } = require("../utils/auth/tokenHandler");
-const GenRes = require("../utils/routers/GenRes");
+const { tokenGen } = require("../../utils/auth/tokenHandler");
+const GenRes = require("../../utils/routers/GenRes");
 const User = require("./user.model");
 const bcrypt = require("bcryptjs");
 const path = require("path");

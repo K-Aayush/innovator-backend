@@ -2,6 +2,7 @@ const basicMiddleware = require("../../middlewares/basicMiddleware");
 const UserFiles = require("../../utils/fileProcessor/multer.users.js");
 const { MultipleFiles, SingleFile, DeleteFiles } = require("./contents.files");
 const ListContents = require("./contents.list.js");
+const IncrementView = require("./content.incrementView.js");
 const {
   AddContent,
   UpdateContents,
@@ -25,6 +26,9 @@ router.post("/new-content", basicMiddleware, AddContent);
 
 // update data
 router.post("/update-contents/:id", basicMiddleware, UpdateContents);
+
+//update increment
+router.post("/content/:id/view", basicMiddleware, IncrementView);
 
 // delete whole contents
 router.delete("/delete-content/:id", basicMiddleware, DeleteContent);

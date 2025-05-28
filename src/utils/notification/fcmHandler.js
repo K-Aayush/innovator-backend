@@ -71,7 +71,7 @@ class FCMHandler {
       return response;
     } catch (error) {
       console.error("Error sending FCM notification:", error);
-      throw error; // Let the caller handle the error
+      throw error; 
     }
   }
 

@@ -1,4 +1,3 @@
-// src/modules/contents/contents.model.js
 const { Schema, model, models } = require("mongoose");
 const ModelGenerator = require("../../utils/database/modelGenerator");
 
@@ -15,7 +14,8 @@ const contentSchema = new Schema(
         "idea",
         "project",
         "question",
-        "annoucement",
+        "announcement",
+        "share",
         "other",
       ],
       set: (v) => v.toLowerCase(),
@@ -26,6 +26,22 @@ const contentSchema = new Schema(
       email: gen.required(String),
       _id: String,
     },
+   
+    isShared: { type: Boolean, default: false },
+    originalContent: {
+      _id: String,
+      type: String,
+      files: [String],
+      status: String,
+      author: {
+        name: String,
+        picture: String,
+        email: String,
+        _id: String,
+      },
+      createdAt: Date,
+    },
+    shareText: String, 
   },
   { timestamps: true, timeseries: true }
 );

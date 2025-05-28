@@ -98,13 +98,6 @@ const UserProfile = async (req, res) => {
     data.followers = followers;
     data.following = following;
 
-    // Send FCM notification for profile view
-    await FCMHandler.sendToUser(data._id, {
-      title: "Profile Viewed",
-      body: "Someone viewed your profile",
-      type: "profile_view",
-    });
-
     return res.status(200).json(GenRes(200, data, null, "Send User"));
   } catch (error) {
     return res.status(500).json(GenRes(500, null, error, error?.message));

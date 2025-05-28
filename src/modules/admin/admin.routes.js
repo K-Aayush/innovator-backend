@@ -20,7 +20,7 @@ const route = require("express").Router();
 
 // User management
 route.get("/admin-users", basicMiddleware, GetUsers);
-route.get("/users/:userId", basicMiddleware, GetUserDetails);
+route.get("/admin-users/:userId", basicMiddleware, GetUserDetails);
 
 // Vendor management
 route.post("/add-vendor", basicMiddleware, AddVendor);

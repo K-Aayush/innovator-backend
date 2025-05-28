@@ -6,10 +6,6 @@ const Notification = require("../notifications/notification.model");
 const fs = require("fs");
 const { CleanUpAfterDeleteContent } = require("./contents.cleanup");
 const transporter = require("../../config/Mailer");
-
-// activities
-const Likes = require("../likes/likes.model");
-const Comments = require("../comments/comments.model");
 const Follow = require("../follow/follow.model");
 
 const AddContent = async (req, res) => {
@@ -34,6 +30,35 @@ const AddContent = async (req, res) => {
       return res.status(401).json(response);
     }
 
+    // If this is a share, verify and process the original content
+    if (data.type === "share" && data.originalContentId) {
+      const originalContent = await Content.findById(
+        data.originalContentId
+      ).lean();
+      if (!originalContent) {
+        return res
+          .status(404)
+          .json(
+            GenRes(
+              404,
+              null,
+              { error: "Original content not found" },
+              "Content to share not found"
+            )
+          );
+      }
+
+      data.isShared = true;
+      data.originalContent = {
+        _id: originalContent._id,
+        type: originalContent.type,
+        files: originalContent.files,
+        status: originalContent.status,
+        author: originalContent.author,
+        createdAt: originalContent.createdAt,
+      };
+    }
+
     // save data
     const newData = new Content({ ...data, author: author });
     await newData.save();
@@ -53,10 +78,14 @@ const AddContent = async (req, res) => {
         picture: author.picture,
       },
       type: "content",
-      content: `${author.name} shared a new post`,
+      content: data.isShared
+        ? `${author.name} shared a post`
+        : `${author.name} shared a new post`,
       metadata: {
         itemId: newData._id.toString(),
         itemType: "content",
+        isShared: data.isShared,
+        originalContentId: data.originalContent?._id,
       },
     }));
 
@@ -72,6 +101,38 @@ const AddContent = async (req, res) => {
             notification
           );
         });
+      }
+    }
+
+    // If this is a share, notify the original content author
+    if (data.isShared) {
+      const shareNotification = new Notification({
+        recipient: {
+          _id: data.originalContent.author._id,
+          email: data.originalContent.author.email,
+        },
+        sender: {
+          _id: author._id,
+          email: author.email,
+          name: author.name,
+          picture: author.picture,
+        },
+        type: "share",
+        content: `${author.name} shared your post`,
+        metadata: {
+          itemId: newData._id.toString(),
+          originalContentId: data.originalContent._id,
+          itemType: "content",
+        },
+      });
+
+      await shareNotification.save();
+
+      if (io) {
+        io.to(data.originalContent.author._id).emit(
+          "new_notification",
+          shareNotification
+        );
       }
     }
 

@@ -4,23 +4,16 @@ const Likes = require("../likes/likes.model");
 const Comments = require("../comments/comments.model");
 const Content = require("../contents/contents.model");
 
-function shuffleArray(array) {
-  for (let i = array.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [array[i], array[j]] = [array[j], array[i]];
-  }
-  return array;
-}
-
 const ListContents = async (req, res) => {
   try {
     const { email, name, search, lastId } = req.query;
     const user = req?.user;
     const pageSize = 10;
 
+    // Base filters
     const filters = {};
 
-    // Filtering logic
+    // Add specific filters if provided
     if (email) filters["author.email"] = email;
     if (name) filters["author.name"] = { $regex: name, $options: "i" };
     if (search) {
@@ -30,52 +23,95 @@ const ListContents = async (req, res) => {
       ];
     }
 
-    // Cursor-based pagination
+    // Add cursor-based pagination
     if (lastId) {
       filters._id = { $lt: lastId };
     }
 
-    // Get following emails if no filter is applied
-    let followingEmails = [];
-    if (Object.keys(filters).length === 0) {
-      const followings = await Follow.find({ "follower.email": user?.email });
-      followingEmails = followings.map((f) => f.following.email);
-    }
+    // Get following list for the current user
+    const followings = await Follow.find({ "follower.email": user?.email });
+    const followingEmails = followings.map((f) => f.following.email);
 
-    // Fetch content
-    const allContents = await Content.find(filters)
-      .sort({ _id: -1 })
-      .limit(pageSize + 1)
-      .lean();
+    // Get engagement metrics for content ranking
+    const engagementMetrics = await Content.aggregate([
+      {
+        $lookup: {
+          from: "likes",
+          localField: "_id",
+          foreignField: "uid",
+          as: "likes",
+        },
+      },
+      {
+        $lookup: {
+          from: "comments",
+          localField: "_id",
+          foreignField: "uid",
+          as: "comments",
+        },
+      },
+      {
+        $project: {
+          _id: 1,
+          engagementScore: {
+            $add: [
+              { $size: "$likes" },
+              { $multiply: [{ $size: "$comments" }, 2] },
+            ],
+          },
+        },
+      },
+    ]);
 
-    const hasMore = allContents.length > pageSize;
-    const contents = hasMore ? allContents.slice(0, -1) : allContents;
+    // Create engagement score map
+    const engagementScores = new Map(
+      engagementMetrics.map((item) => [
+        item._id.toString(),
+        item.engagementScore,
+      ])
+    );
 
-    // Determine relevance
-    const relevant = [],
-      irrelevant = [];
-    for (const content of contents) {
-      const authorEmail = content.author?.email || "";
-      const authorName = content.author?.name || "";
+    // Fetch content with separate queries for following and non-following
+    const [followingContent, otherContent] = await Promise.all([
+      // Content from followed users
+      Content.find({
+        ...filters,
+        "author.email": { $in: followingEmails },
+      })
+        .sort({ _id: -1 })
+        .limit(pageSize)
+        .lean(),
 
-      let isRelevant =
-        (email && authorEmail === email) ||
-        (name && new RegExp(name, "i").test(authorName)) ||
-        (search &&
-          (new RegExp(search, "i").test(authorName) ||
-            new RegExp(search, "i").test(authorEmail))) ||
-        (followingEmails.length > 0 && followingEmails.includes(authorEmail)) ||
-        Object.keys(filters).length === 0;
+      // Content from non-followed users
+      Content.find({
+        ...filters,
+        "author.email": { $nin: followingEmails },
+      })
+        .sort({ _id: -1 })
+        .limit(pageSize)
+        .lean(),
+    ]);
 
-      (isRelevant ? relevant : irrelevant).push(content);
-    }
+    // Combine and sort content based on algorithm
+    const allContent = [...followingContent, ...otherContent].map(
+      (content) => ({
+        ...content,
+        score: calculateContentScore(
+          content,
+          engagementScores,
+          followingEmails
+        ),
+      })
+    );
 
-    // Shuffle content
-    const mixedContent = shuffleArray([...relevant, ...irrelevant]);
+    // Sort by score and take required number of items
+    const sortedContent = allContent
+      .sort((a, b) => b.score - a.score)
+      .slice(0, pageSize);
 
-    // Attach likes, comments, and followed status
+    // Remove score from final output
     const finalContent = await Promise.all(
-      mixedContent.map(async (item) => {
+      sortedContent.map(async (item) => {
         const base = { uid: item._id, type: "content" };
 
         const [likes, comments, liked, followed] = await Promise.all([
@@ -88,8 +124,9 @@ const ListContents = async (req, res) => {
           }),
         ]);
 
+        const { score, ...contentWithoutScore } = item;
         return {
-          ...item,
+          ...contentWithoutScore,
           liked: !!liked,
           likes,
           comments,
@@ -98,23 +135,40 @@ const ListContents = async (req, res) => {
       })
     );
 
-    // Response format
-    const response = GenRes(
-      200,
-      {
-        contents: finalContent,
-        hasMore,
-        nextCursor: hasMore ? contents[contents.length - 1]._id : null,
-      },
-      null,
-      `Retrieved ${finalContent.length} content items`
-    );
+    // Determine if there are more items
+    const hasMore = finalContent.length === pageSize;
 
-    return res.status(200).json(response);
+    return res.status(200).json(
+      GenRes(
+        200,
+        {
+          contents: finalContent,
+          hasMore,
+          nextCursor: hasMore
+            ? finalContent[finalContent.length - 1]._id
+            : null,
+        },
+        null,
+        `Retrieved ${finalContent.length} content items`
+      )
+    );
   } catch (error) {
-    const response = GenRes(500, null, error, error?.message);
-    return res.status(500).json(response);
+    return res.status(500).json(GenRes(500, null, error, error?.message));
   }
 };
+
+// Helper function to calculate content score
+function calculateContentScore(content, engagementScores, followingEmails) {
+  const baseScore = engagementScores.get(content._id.toString()) || 0;
+  const timeDecay = 1 / Math.sqrt(1 + getHoursSinceCreation(content.createdAt));
+  const followingBonus = followingEmails.includes(content.author.email) ? 2 : 1;
+  const shareBonus = content.isShared ? 1.5 : 1;
+
+  return baseScore * timeDecay * followingBonus * shareBonus;
+}
+
+function getHoursSinceCreation(createdAt) {
+  return (Date.now() - new Date(createdAt).getTime()) / (1000 * 60 * 60);
+}
 
 module.exports = ListContents;

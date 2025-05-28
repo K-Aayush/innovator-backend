@@ -3,6 +3,34 @@ const Follow = require("../follow/follow.model");
 const Likes = require("../likes/likes.model");
 const Comments = require("../comments/comments.model");
 const Content = require("../contents/contents.model");
+const User = require("../user/user.model");
+
+// Helper function to calculate time decay
+function getTimeDecayScore(createdAt) {
+  const hoursAge =
+    (Date.now() - new Date(createdAt).getTime()) / (1000 * 60 * 60);
+  return 1 / (1 + Math.sqrt(hoursAge));
+}
+
+// Helper function to calculate content quality score
+async function calculateQualityScore(content) {
+  let score = 1;
+
+  // Boost content with media
+  if (content.files && content.files.length > 0) {
+    score *= 1.2;
+  }
+
+  // Fetch author details from User model
+  const author = await User.findOne({ email: content.author.email }).lean();
+
+  // Boost based on author's level
+  if (author?.level === "bronze") {
+    score *= 1.1;
+  }
+
+  return score;
+}
 
 const ListContents = async (req, res) => {
   try {
@@ -20,6 +48,7 @@ const ListContents = async (req, res) => {
       filters.$or = [
         { "author.name": { $regex: search, $options: "i" } },
         { "author.email": { $regex: search, $options: "i" } },
+        { status: { $regex: search, $options: "i" } },
       ];
     }
 
@@ -28,9 +57,19 @@ const ListContents = async (req, res) => {
       filters._id = { $lt: lastId };
     }
 
+    // Get user's interests and preferences
+    const userDetails = await User.findById(user?._id).lean();
+    const userInterests = userDetails?.interests || [];
+
     // Get following list for the current user
     const followings = await Follow.find({ "follower.email": user?.email });
     const followingEmails = followings.map((f) => f.following.email);
+
+    // Get user's recent interactions
+    const recentLikes = await Likes.find({
+      "user.email": user?.email,
+      createdAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
+    }).distinct("uid");
 
     // Get engagement metrics for content ranking
     const engagementMetrics = await Content.aggregate([
@@ -55,8 +94,9 @@ const ListContents = async (req, res) => {
           _id: 1,
           engagementScore: {
             $add: [
-              { $size: "$likes" },
+              { $multiply: [{ $size: "$likes" }, 1] },
               { $multiply: [{ $size: "$comments" }, 2] },
+              { $multiply: [{ $ifNull: ["$views", 0] }, 0.1] }, // Include views
             ],
           },
         },
@@ -92,15 +132,54 @@ const ListContents = async (req, res) => {
         .lean(),
     ]);
 
-    // Combine and sort content based on algorithm
-    const allContent = [...followingContent, ...otherContent].map(
-      (content) => ({
-        ...content,
-        score: calculateContentScore(
-          content,
-          engagementScores,
-          followingEmails
-        ),
+    // Combine and calculate scores for all content
+    const allContent = await Promise.all(
+      [...followingContent, ...otherContent].map(async (content) => {
+        const baseEngagementScore =
+          engagementScores.get(content._id.toString()) || 0;
+        const timeDecay = getTimeDecayScore(content.createdAt);
+        const qualityScore = await calculateQualityScore(content);
+
+        // Calculate interest match score
+        const interestMatchScore = userInterests.some((interest) =>
+          content.status?.toLowerCase().includes(interest.toLowerCase())
+        )
+          ? 1.3
+          : 1;
+
+        // Calculate relationship boost
+        const relationshipBoost = followingEmails.includes(content.author.email)
+          ? 1.5
+          : 1;
+
+        // Calculate recency boost for interactions
+        const recentInteractionBoost = recentLikes.includes(
+          content._id.toString()
+        )
+          ? 1.2
+          : 1;
+
+        // Calculate viral coefficient (simplified)
+        const viralCoefficient = baseEngagementScore > 100 ? 1.5 : 1;
+
+        // Boosted content gets priority
+        const boostMultiplier = content.isBoosted ? 2 : 1;
+
+        // Final score calculation
+        const finalScore =
+          baseEngagementScore *
+          timeDecay *
+          qualityScore *
+          interestMatchScore *
+          relationshipBoost *
+          recentInteractionBoost *
+          viralCoefficient *
+          boostMultiplier;
+
+        return {
+          ...content,
+          score: finalScore,
+        };
       })
     );
 
@@ -109,7 +188,7 @@ const ListContents = async (req, res) => {
       .sort((a, b) => b.score - a.score)
       .slice(0, pageSize);
 
-    // Remove score from final output
+    // Remove score from final output and add engagement metrics
     const finalContent = await Promise.all(
       sortedContent.map(async (item) => {
         const base = { uid: item._id, type: "content" };
@@ -156,19 +235,5 @@ const ListContents = async (req, res) => {
     return res.status(500).json(GenRes(500, null, error, error?.message));
   }
 };
-
-// Helper function to calculate content score
-function calculateContentScore(content, engagementScores, followingEmails) {
-  const baseScore = engagementScores.get(content._id.toString()) || 0;
-  const timeDecay = 1 / Math.sqrt(1 + getHoursSinceCreation(content.createdAt));
-  const followingBonus = followingEmails.includes(content.author.email) ? 2 : 1;
-  const shareBonus = content.isShared ? 1.5 : 1;
-
-  return baseScore * timeDecay * followingBonus * shareBonus;
-}
-
-function getHoursSinceCreation(createdAt) {
-  return (Date.now() - new Date(createdAt).getTime()) / (1000 * 60 * 60);
-}
 
 module.exports = ListContents;

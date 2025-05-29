@@ -85,6 +85,7 @@ const fetchAndScoreContent = async (
   engagementScores,
   userInterests,
   recentLikes,
+  userEmail,
   pageSize,
   isRefresh
 ) => {
@@ -98,6 +99,7 @@ const fetchAndScoreContent = async (
     ],
   };
 
+  // Fetch unseen content
   let contents = await Content.find({
     ...query,
     _id: { $nin: viewedContent },
@@ -106,37 +108,22 @@ const fetchAndScoreContent = async (
     .limit(fetchSize)
     .lean();
 
-  if (contents.length < pageSize && !isRefresh) {
-    const viewedContents = await Content.find({
+  console.log("Unseen contents length:", contents.length);
+
+  // Fetch viewed content if needed
+  let viewedContents = [];
+  if (contents.length < pageSize) {
+    viewedContents = await Content.find({
       ...query,
       _id: { $in: viewedContent },
     })
-      .sort({ _id: -1 })
+      .sort({ views: 1, _id: -1 }) // Prioritize less viewed, then recent
       .limit(fetchSize - contents.length)
       .lean();
-    contents = [...contents, ...viewedContents];
-  } else if (isRefresh && contents.length < pageSize) {
-    const viewedContents = await Content.find({
-      ...query,
-      _id: { $in: viewedContent },
-      views: { $lt: 100 },
-    })
-      .sort({ _id: -1 })
-      .limit(fetchSize - contents.length)
-      .lean();
-    contents = [...contents, ...viewedContents];
-    if (contents.length < pageSize) {
-      const remainingViewed = await Content.find({
-        ...query,
-        _id: { $in: viewedContent },
-        views: { $gte: 100 },
-      })
-        .sort({ _id: -1 })
-        .limit(fetchSize - contents.length)
-        .lean();
-      contents = [...contents, ...remainingViewed];
-    }
+    console.log("Viewed contents length:", viewedContents.length);
   }
+
+  contents = [...contents, ...viewedContents];
 
   const seenIds = new Set();
   contents = contents.filter((c) => {
@@ -144,6 +131,8 @@ const fetchAndScoreContent = async (
     seenIds.add(c._id.toString());
     return true;
   });
+
+  console.log("Total contents fetched:", contents.length);
 
   const scored = await Promise.all(
     contents.map(async (c) => {
@@ -175,13 +164,18 @@ const fetchAndScoreContent = async (
 
       try {
         const response = await axios.post(
-          "http://127.0.0.1:27017:0548/predict",
+          "http://182.93.94.210:0548/predict",
           features
         );
-        const score = response.data.score * qualityScore;
+        let score = response.data.score * qualityScore;
+        // Apply additional penalty for viewed content
+        if (features.is_viewed) score *= 0.1;
+        console.log(
+          `Scored content _id: ${c._id}, score: ${score}, is_viewed: ${features.is_viewed}`
+        );
         return { ...c, score };
       } catch (err) {
-        console.error("ML service error:", err.message);
+        console.error(`ML service error for _id: ${c._id}:`, err.message);
         const interestMatch = features.interest_match ? 1.3 : 1;
         const relationshipBoost = features.is_following ? 1.5 : 1;
         const recentInteraction = features.recent_interaction ? 1.2 : 1;
@@ -203,6 +197,9 @@ const fetchAndScoreContent = async (
           boost *
           lessViewedBoost *
           random;
+        console.log(
+          `Heuristic score for _id: ${c._id}, score: ${score}, is_viewed: ${features.is_viewed}`
+        );
         return { ...c, score };
       }
     })
@@ -255,6 +252,9 @@ const ListContents = async (req, res) => {
       await getUserData(user);
     const engagementScores = await getEngagementScores();
 
+    console.log("Viewed content IDs:", viewedContent);
+    console.log("User email:", user.email);
+
     const scoredContent = await fetchAndScoreContent(
       filters,
       followingEmails,
@@ -266,6 +266,22 @@ const ListContents = async (req, res) => {
       pageSizeNum,
       isRefresh
     );
+
+    if (scoredContent.length === 0) {
+      console.log("No content available after scoring");
+      return res.status(200).json(
+        GenRes(
+          200,
+          {
+            contents: [],
+            hasMore: false,
+            nextCursor: null,
+          },
+          null,
+          "No content available"
+        )
+      );
+    }
 
     const finalContent = await enrichContent(
       scoredContent.slice(0, pageSizeNum),
@@ -288,6 +304,7 @@ const ListContents = async (req, res) => {
       )
     );
   } catch (err) {
+    console.error("ListContents error:", err.message);
     return res.status(500).json(GenRes(500, null, err, err?.message));
   }
 };

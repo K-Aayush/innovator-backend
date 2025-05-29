@@ -81,9 +81,10 @@ const fetchAndScoreContent = async (
   engagementScores,
   userInterests,
   recentLikes,
-  userEmail
+  userEmail,
+  pageSize
 ) => {
-  const fetchSize = 30;
+  const fetchSize = pageSize * 3; // Fetch more to ensure diversity
   const fetchContent = async (emailsInList, excludeViewed = true) => {
     const emailFilter = emailsInList.length
       ? { "author.email": { $in: emailsInList } }
@@ -97,16 +98,21 @@ const fetchAndScoreContent = async (
       .lean();
   };
 
+  // Fetch unseen content first
   let contents = [
     ...(await fetchContent(emails, true)),
     ...(await fetchContent([], true)),
   ];
-  if (contents.length < 10)
+
+  // If not enough unseen content, fetch viewed content as fallback
+  if (contents.length < pageSize) {
     contents.push(
       ...(await fetchContent(emails, false)),
       ...(await fetchContent([], false))
     );
+  }
 
+  // Score content
   const scored = await Promise.all(
     contents.map(async (c) => {
       const metrics = engagementScores.get(c._id.toString()) || {
@@ -144,7 +150,8 @@ const fetchAndScoreContent = async (
     })
   );
 
-  return scored.sort((a, b) => b.score - a.score).slice(0, 10);
+  // Sort and return all scored content (don't slice yet)
+  return scored.sort((a, b) => b.score - a.score);
 };
 
 // Add final metadata (likes/comments/follow) to content
@@ -170,8 +177,9 @@ const enrichContent = async (items, userEmail) => {
 
 const ListContents = async (req, res) => {
   try {
-    const { email, name, search, lastId } = req.query;
+    const { email, name, search, lastId, pageSize = 10 } = req.query;
     const user = req.user;
+    const pageSizeNum = parseInt(pageSize, 10) || 10; // Default to 10 if invalid
 
     const filters = {};
     if (email) filters["author.email"] = email;
@@ -196,11 +204,16 @@ const ListContents = async (req, res) => {
       engagementScores,
       userDetails?.interests || [],
       recentLikes,
-      user.email
+      user.email,
+      pageSizeNum
     );
 
-    const finalContent = await enrichContent(scoredContent, user.email);
-    const hasMore = scoredContent.length > 10;
+    // Slice the content for the current page
+    const finalContent = await enrichContent(
+      scoredContent.slice(0, pageSizeNum),
+      user.email
+    );
+    const hasMore = scoredContent.length > pageSizeNum;
 
     return res.status(200).json(
       GenRes(
@@ -209,7 +222,7 @@ const ListContents = async (req, res) => {
           contents: finalContent,
           hasMore,
           nextCursor: hasMore
-            ? finalContent[finalContent.length - 1]._id
+            ? finalContent[finalContent.length - 1]?._id || null
             : null,
         },
         null,

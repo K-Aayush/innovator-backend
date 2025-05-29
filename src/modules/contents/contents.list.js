@@ -5,44 +5,175 @@ const Comments = require("../comments/comments.model");
 const Content = require("../contents/contents.model");
 const User = require("../user/user.model");
 
-// Helper function to calculate time decay
-function getTimeDecayScore(createdAt) {
-  const hoursAge =
+// Time decay calculation
+const getTimeDecayScore = (createdAt) => {
+  const hoursOld =
     (Date.now() - new Date(createdAt).getTime()) / (1000 * 60 * 60);
-  return 1 / (1 + Math.sqrt(hoursAge));
-}
+  return 1 / (1 + Math.sqrt(hoursOld));
+};
 
-// Helper function to calculate content quality score
-async function calculateQualityScore(content) {
-  let score = 1;
-
-  // Boost content with media
-  if (content.files && content.files.length > 0) {
-    score *= 1.2;
-  }
-
-  // Fetch author details from User model
+// Quality score based on media and author level
+const calculateQualityScore = async (content) => {
+  let score = content.files?.length ? 1.2 : 1;
   const author = await User.findOne({ email: content.author.email }).lean();
-
-  // Boost based on author's level
-  if (author?.level === "bronze") {
-    score *= 1.1;
-  }
-
+  if (author?.level === "bronze") score *= 1.1;
   return score;
-}
+};
+
+// Fetch user data including interests, followings, likes, views
+const getUserData = async (user) => {
+  const userDetails = await User.findById(user._id).lean();
+  const followings = await Follow.find({ "follower.email": user.email });
+  const followingEmails = followings.map((f) => f.following.email);
+  const recentLikes = await Likes.find({
+    "user.email": user.email,
+    createdAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
+  }).distinct("uid");
+  const viewedContent = await Content.find({ viewedBy: user.email }).distinct(
+    "_id"
+  );
+
+  return { userDetails, followingEmails, recentLikes, viewedContent };
+};
+
+// Fetch engagement metrics
+const getEngagementScores = async () => {
+  const metrics = await Content.aggregate([
+    {
+      $lookup: {
+        from: "likes",
+        localField: "_id",
+        foreignField: "uid",
+        as: "likes",
+      },
+    },
+    {
+      $lookup: {
+        from: "comments",
+        localField: "_id",
+        foreignField: "uid",
+        as: "comments",
+      },
+    },
+    {
+      $project: {
+        _id: 1,
+        views: 1,
+        engagementScore: {
+          $add: [
+            { $multiply: [{ $size: "$likes" }, 1] },
+            { $multiply: [{ $size: "$comments" }, 2] },
+            { $multiply: [{ $ifNull: ["$views", 0] }, 0.1] },
+          ],
+        },
+      },
+    },
+  ]);
+
+  return new Map(metrics.map((item) => [item._id.toString(), { ...item }]));
+};
+
+// Fetch and score content
+const fetchAndScoreContent = async (
+  filters,
+  emails,
+  viewedContent,
+  engagementScores,
+  userInterests,
+  recentLikes,
+  userEmail
+) => {
+  const fetchSize = 30;
+  const fetchContent = async (emailsInList, excludeViewed = true) => {
+    const emailFilter = emailsInList.length
+      ? { "author.email": { $in: emailsInList } }
+      : {};
+    const viewFilter = excludeViewed
+      ? { _id: { $nin: viewedContent } }
+      : { _id: { $in: viewedContent } };
+    return Content.find({ ...filters, ...emailFilter, ...viewFilter })
+      .sort({ _id: -1 })
+      .limit(fetchSize)
+      .lean();
+  };
+
+  let contents = [
+    ...(await fetchContent(emails, true)),
+    ...(await fetchContent([], true)),
+  ];
+  if (contents.length < 10)
+    contents.push(
+      ...(await fetchContent(emails, false)),
+      ...(await fetchContent([], false))
+    );
+
+  const scored = await Promise.all(
+    contents.map(async (c) => {
+      const metrics = engagementScores.get(c._id.toString()) || {
+        engagementScore: 0,
+        views: 0,
+      };
+      const qualityScore = await calculateQualityScore(c);
+
+      const interestMatch = userInterests.some((i) =>
+        c.status?.toLowerCase().includes(i.toLowerCase())
+      )
+        ? 1.3
+        : 1;
+      const relationshipBoost = emails.includes(c.author.email) ? 1.5 : 1;
+      const recentInteraction = recentLikes.includes(c._id.toString())
+        ? 1.2
+        : 1;
+      const viewedPenalty = viewedContent.includes(c._id.toString()) ? 0.1 : 1;
+      const viral = metrics.engagementScore > 100 ? 1.5 : 1;
+      const boost = metrics.views > 1000 ? 2 : 1;
+      const random = 1 + Math.random() * 0.1;
+
+      const score =
+        metrics.engagementScore *
+        getTimeDecayScore(c.createdAt) *
+        qualityScore *
+        interestMatch *
+        relationshipBoost *
+        recentInteraction *
+        viewedPenalty *
+        viral *
+        boost *
+        random;
+      return { ...c, score };
+    })
+  );
+
+  return scored.sort((a, b) => b.score - a.score).slice(0, 10);
+};
+
+// Add final metadata (likes/comments/follow) to content
+const enrichContent = async (items, userEmail) => {
+  return Promise.all(
+    items.map(async (item) => {
+      const base = { uid: item._id, type: "content" };
+      const [likes, comments, liked, followed] = await Promise.all([
+        Likes.countDocuments(base),
+        Comments.countDocuments(base),
+        Likes.findOne({ ...base, "user.email": userEmail }),
+        Follow.findOne({
+          "follower.email": userEmail,
+          "following.email": item.author.email,
+        }),
+      ]);
+
+      const { score, ...rest } = item;
+      return { ...rest, likes, comments, liked: !!liked, followed: !!followed };
+    })
+  );
+};
 
 const ListContents = async (req, res) => {
   try {
     const { email, name, search, lastId } = req.query;
-    const user = req?.user;
-    const pageSize = 10;
-    const fetchSize = pageSize * 3; // Fetch more content to ensure diversity
+    const user = req.user;
 
-    // Base filters
     const filters = {};
-
-    // Add specific filters if provided
     if (email) filters["author.email"] = email;
     if (name) filters["author.name"] = { $regex: name, $options: "i" };
     if (search) {
@@ -52,214 +183,24 @@ const ListContents = async (req, res) => {
         { status: { $regex: search, $options: "i" } },
       ];
     }
+    if (lastId) filters._id = { $lt: lastId };
 
-    // Add cursor-based pagination
-    if (lastId) {
-      filters._id = { $lt: lastId };
-    }
+    const { userDetails, followingEmails, recentLikes, viewedContent } =
+      await getUserData(user);
+    const engagementScores = await getEngagementScores();
 
-    // Get user's interests and preferences
-    const userDetails = await User.findById(user?._id).lean();
-    const userInterests = userDetails?.interests || [];
-
-    // Get following list for the current user
-    const followings = await Follow.find({ "follower.email": user?.email });
-    const followingEmails = followings.map((f) => f.following.email);
-
-    // Get user's recent interactions
-    const recentLikes = await Likes.find({
-      "user.email": user?.email,
-      createdAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
-    }).distinct("uid");
-
-    // Get viewed content for the user
-    const viewedContent = await Content.find({
-      viewedBy: user?.email,
-    }).distinct("_id");
-
-    // Get engagement metrics for content ranking
-    const engagementMetrics = await Content.aggregate([
-      {
-        $lookup: {
-          from: "likes",
-          localGrid: "_id",
-          foreignField: "uid",
-          as: "likes",
-        },
-      },
-      {
-        $lookup: {
-          from: "comments",
-          localField: "_id",
-          foreignField: "uid",
-          as: "comments",
-        },
-      },
-      {
-        $project: {
-          _id: 1,
-          views: 1,
-          engagementScore: {
-            $add: [
-              { $multiply: [{ $size: "$likes" }, 1] },
-              { $multiply: [{ $size: "$comments" }, 2] },
-              { $multiply: [{ $ifNull: ["$views", 0] }, 0.1] },
-            ],
-          },
-        },
-      },
-    ]);
-
-    // Create engagement score map
-    const engagementScores = new Map(
-      engagementMetrics.map((item) => [
-        item._id.toString(),
-        { engagementScore: item.engagementScore, views: item.views },
-      ])
+    const scoredContent = await fetchAndScoreContent(
+      filters,
+      followingEmails,
+      viewedContent,
+      engagementScores,
+      userDetails?.interests || [],
+      recentLikes,
+      user.email
     );
 
-    // Fetch content with separate queries for following and non-following
-    const [followingContent, otherContent] = await Promise.all([
-      Content.find({
-        ...filters,
-        "author.email": { $in: followingEmails },
-        _id: { $nin: viewedContent }, // Prioritize unseen content
-      })
-        .sort({ _id: -1 })
-        .limit(fetchSize)
-        .lean(),
-      Content.find({
-        ...filters,
-        "author.email": { $nin: followingEmails },
-        _id: { $nin: viewedContent }, // Prioritize unseen content
-      })
-        .sort({ _id: -1 })
-        .limit(fetchSize)
-        .lean(),
-    ]);
-
-    // If not enough unseen content, fetch some viewed content as fallback
-    let allContent = [...followingContent, ...otherContent];
-    if (allContent.length < pageSize) {
-      const fallbackContent = await Promise.all([
-        Content.find({
-          ...filters,
-          "author.email": { $in: followingEmails },
-          _id: { $in: viewedContent }, // Fetch viewed content as fallback
-        })
-          .sort({ _id: -1 })
-          .limit(fetchSize - followingContent.length)
-          .lean(),
-        Content.find({
-          ...filters,
-          "author.email": { $nin: followingEmails },
-          _id: { $in: viewedContent }, // Fetch viewed content as fallback
-        })
-          .sort({ _id: -1 })
-          .limit(fetchSize - otherContent.length)
-          .lean(),
-      ]);
-      allContent = [...allContent, ...fallbackContent.flat()];
-    }
-
-    // Calculate scores for all content
-    const scoredContent = await Promise.all(
-      allContent.map(async (content) => {
-        const metrics = engagementScores.get(content._id.toString()) || {
-          engagementScore: 0,
-          views: 0,
-        };
-        const baseEngagementScore = metrics.engagementScore;
-        const views = metrics.views;
-        const timeDecay = getTimeDecayScore(content.createdAt);
-        const qualityScore = await calculateQualityScore(content);
-
-        // Calculate interest match score
-        const interestMatchScore = userInterests.some((interest) =>
-          content.status?.toLowerCase().includes(interest.toLowerCase())
-        )
-          ? 1.3
-          : 1;
-
-        // Calculate relationship boost
-        const relationshipBoost = followingEmails.includes(content.author.email)
-          ? 1.5
-          : 1;
-
-        // Calculate recency boost for interactions
-        const recentInteractionBoost = recentLikes.includes(
-          content._id.toString()
-        )
-          ? 1.2
-          : 1;
-
-        // Strong penalty for viewed content
-        const viewedPenalty = viewedContent.includes(content._id.toString())
-          ? 0.1
-          : 1;
-
-        // Boost only if views > 1000
-        const boostMultiplier = views > 1000 ? 2 : 1;
-
-        // Calculate viral coefficient
-        const viralCoefficient = baseEngagementScore > 100 ? 1.5 : 1;
-
-        // Add slight randomization for diversity
-        const randomizationFactor = 1 + Math.random() * 0.1;
-
-        // Final score calculation
-        const finalScore =
-          baseEngagementScore *
-          timeDecay *
-          qualityScore *
-          interestMatchScore *
-          relationshipBoost *
-          recentInteractionBoost *
-          viewedPenalty *
-          viralCoefficient *
-          boostMultiplier *
-          randomizationFactor;
-
-        return {
-          ...content,
-          score: finalScore,
-        };
-      })
-    );
-
-    // Sort by score and take required number of items
-    const sortedContent = scoredContent
-      .sort((a, b) => b.score - a.score)
-      .slice(0, pageSize);
-
-    // Remove score from final output and add engagement metrics
-    const finalContent = await Promise.all(
-      sortedContent.map(async (item) => {
-        const base = { uid: item._id, type: "content" };
-
-        const [likes, comments, liked, followed] = await Promise.all([
-          Likes.countDocuments(base),
-          Comments.countDocuments(base),
-          Likes.findOne({ ...base, "user.email": user?.email }),
-          Follow.findOne({
-            "follower.email": user?.email,
-            "following.email": item?.author?.email,
-          }),
-        ]);
-
-        const { score, ...contentWithoutScore } = item;
-        return {
-          ...contentWithoutScore,
-          liked: !!liked,
-          likes,
-          comments,
-          followed: !!followed,
-        };
-      })
-    );
-
-    // Determine if there are more items
-    const hasMore = scoredContent.length > pageSize;
+    const finalContent = await enrichContent(scoredContent, user.email);
+    const hasMore = scoredContent.length > 10;
 
     return res.status(200).json(
       GenRes(
@@ -275,8 +216,8 @@ const ListContents = async (req, res) => {
         `Retrieved ${finalContent.length} content items`
       )
     );
-  } catch (error) {
-    return res.status(500).json(GenRes(500, null, error, error?.message));
+  } catch (err) {
+    return res.status(500).json(GenRes(500, null, err, err?.message));
   }
 };
 

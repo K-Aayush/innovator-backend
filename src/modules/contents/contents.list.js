@@ -37,6 +37,7 @@ const ListContents = async (req, res) => {
     const { email, name, search, lastId } = req.query;
     const user = req?.user;
     const pageSize = 10;
+    const fetchSize = pageSize * 3; // Fetch more content to ensure diversity
 
     // Base filters
     const filters = {};
@@ -81,7 +82,7 @@ const ListContents = async (req, res) => {
       {
         $lookup: {
           from: "likes",
-          localField: "_id",
+          localGrid: "_id",
           foreignField: "uid",
           as: "likes",
         },
@@ -122,22 +123,48 @@ const ListContents = async (req, res) => {
       Content.find({
         ...filters,
         "author.email": { $in: followingEmails },
+        _id: { $nin: viewedContent }, // Prioritize unseen content
       })
         .sort({ _id: -1 })
-        .limit(pageSize * 2) // Fetch more to account for filtering
+        .limit(fetchSize)
         .lean(),
       Content.find({
         ...filters,
         "author.email": { $nin: followingEmails },
+        _id: { $nin: viewedContent }, // Prioritize unseen content
       })
         .sort({ _id: -1 })
-        .limit(pageSize * 2)
+        .limit(fetchSize)
         .lean(),
     ]);
 
-    // Combine and calculate scores for all content
-    const allContent = await Promise.all(
-      [...followingContent, ...otherContent].map(async (content) => {
+    // If not enough unseen content, fetch some viewed content as fallback
+    let allContent = [...followingContent, ...otherContent];
+    if (allContent.length < pageSize) {
+      const fallbackContent = await Promise.all([
+        Content.find({
+          ...filters,
+          "author.email": { $in: followingEmails },
+          _id: { $in: viewedContent }, // Fetch viewed content as fallback
+        })
+          .sort({ _id: -1 })
+          .limit(fetchSize - followingContent.length)
+          .lean(),
+        Content.find({
+          ...filters,
+          "author.email": { $nin: followingEmails },
+          _id: { $in: viewedContent }, // Fetch viewed content as fallback
+        })
+          .sort({ _id: -1 })
+          .limit(fetchSize - otherContent.length)
+          .lean(),
+      ]);
+      allContent = [...allContent, ...fallbackContent.flat()];
+    }
+
+    // Calculate scores for all content
+    const scoredContent = await Promise.all(
+      allContent.map(async (content) => {
         const metrics = engagementScores.get(content._id.toString()) || {
           engagementScore: 0,
           views: 0,
@@ -166,9 +193,9 @@ const ListContents = async (req, res) => {
           ? 1.2
           : 1;
 
-        // Penalize viewed content
+        // Strong penalty for viewed content
         const viewedPenalty = viewedContent.includes(content._id.toString())
-          ? 0.5
+          ? 0.1
           : 1;
 
         // Boost only if views > 1000
@@ -176,6 +203,9 @@ const ListContents = async (req, res) => {
 
         // Calculate viral coefficient
         const viralCoefficient = baseEngagementScore > 100 ? 1.5 : 1;
+
+        // Add slight randomization for diversity
+        const randomizationFactor = 1 + Math.random() * 0.1;
 
         // Final score calculation
         const finalScore =
@@ -187,7 +217,8 @@ const ListContents = async (req, res) => {
           recentInteractionBoost *
           viewedPenalty *
           viralCoefficient *
-          boostMultiplier;
+          boostMultiplier *
+          randomizationFactor;
 
         return {
           ...content,
@@ -197,7 +228,7 @@ const ListContents = async (req, res) => {
     );
 
     // Sort by score and take required number of items
-    const sortedContent = allContent
+    const sortedContent = scoredContent
       .sort((a, b) => b.score - a.score)
       .slice(0, pageSize);
 
@@ -228,7 +259,7 @@ const ListContents = async (req, res) => {
     );
 
     // Determine if there are more items
-    const hasMore = finalContent.length === pageSize;
+    const hasMore = scoredContent.length > pageSize;
 
     return res.status(200).json(
       GenRes(

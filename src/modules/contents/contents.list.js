@@ -13,7 +13,16 @@ const getTimeDecayScore = (createdAt) => {
   return 1 / (1 + Math.sqrt(Math.max(hoursOld, 0.1)));
 };
 
-// Quality score based on media and author level
+// Fisher-Yates shuffle
+const shuffleArray = (array) => {
+  for (let i = array.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [array[i], array[j]] = [array[j], array[i]];
+  }
+  return array;
+};
+
+// Quality score
 const calculateQualityScore = async (content) => {
   let score = content.files?.length ? 1.2 : 1;
   const author = await User.findOne({ email: content.author.email }).lean();
@@ -110,29 +119,41 @@ const fetchAndScoreContent = async (
 
   console.log("Unseen contents length:", contents.length);
 
-  // Fetch viewed content if needed
+  // Fetch viewed content
   let viewedContents = [];
-  if (contents.length < pageSize) {
+  if (contents.length < pageSize || isRefresh) {
     viewedContents = await Content.find({
       ...query,
       _id: { $in: viewedContent },
     })
-      .sort({ engagementScore: -1, _id: -1 }) // Prioritize engagement, then recency
+      .sort({ _id: -1 })
       .limit(fetchSize - contents.length)
       .lean();
     console.log("Viewed contents length:", viewedContents.length);
   }
 
-  contents = [...contents, ...viewedContents];
-
+  // Deduplicate
   const seenIds = new Set();
-  contents = contents.filter((c) => {
-    if (seenIds.has(c._id.toString())) return false;
-    seenIds.add(c._id.toString());
+  contents = [...contents, ...viewedContents].filter((c) => {
+    const id = c._id.toString();
+    if (seenIds.has(id)) return false;
+    seenIds.add(id);
     return true;
   });
 
-  console.log("Total contents fetched:", contents.length);
+  console.log("Total unique contents fetched:", contents.length);
+
+  // Shuffle if all viewed
+  if (
+    contents.length > 0 &&
+    contents.every((c) => viewedContent.includes(c._id.toString()))
+  ) {
+    contents = shuffleArray(contents);
+    console.log(
+      "Shuffled viewed contents:",
+      contents.map((c) => c._id)
+    );
+  }
 
   const scored = await Promise.all(
     contents.map(async (c) => {
@@ -168,10 +189,7 @@ const fetchAndScoreContent = async (
           features
         );
         let score = response.data.score * qualityScore;
-        // Apply penalty for viewed content
         if (features.is_viewed) score *= 0.1;
-        // Add randomization for viewed content on refresh
-        if (features.is_viewed && isRefresh) score *= 0.8 + Math.random() * 0.4;
         console.log(
           `Scored content _id: ${c._id}, score: ${score}, is_viewed: ${features.is_viewed}`
         );
@@ -187,7 +205,7 @@ const fetchAndScoreContent = async (
         const lessViewedBoost = metrics.views < 100 ? 1.4 : 1;
         const random = 1 + Math.random() * 0.15;
 
-        let score =
+        const score =
           metrics.engagementScore *
           getTimeDecayScore(c.createdAt) *
           qualityScore *
@@ -199,8 +217,6 @@ const fetchAndScoreContent = async (
           boost *
           lessViewedBoost *
           random;
-        // Add randomization for viewed content on refresh
-        if (features.is_viewed && isRefresh) score *= 0.8 + Math.random() * 0.4;
         console.log(
           `Heuristic score for _id: ${c._id}, score: ${score}, is_viewed: ${features.is_viewed}`
         );
@@ -209,7 +225,12 @@ const fetchAndScoreContent = async (
     })
   );
 
-  return scored.sort((a, b) => b.score - a.score);
+  // Sort by score unless all viewed
+  if (!scored.every((c) => viewedContent.includes(c._id.toString()))) {
+    scored.sort((a, b) => b.score - a.score);
+  }
+
+  return scored;
 };
 
 // Enrich content
@@ -242,12 +263,12 @@ const ListContents = async (req, res) => {
 
     const filters = {};
     if (email) filters["author.email"] = email;
-    if (name) filters["author.name"] = { regex: name, options: "i" };
+    if (name) filters["author.name"] = { $regex: name, $options: "i" };
     if (search) {
       filters.$or = [
-        { "author.name": { regex: search, options: "i" } },
-        { "author.email": { regex: search, options: "i" } },
-        { status: { regex: search, options: "i" } },
+        { "author.name": { $regex: search, $options: "i" } },
+        { "author.email": { $regex: search, $options: "i" } },
+        { status: { $regex: search, $options: "i" } },
       ];
     }
     if (lastId) filters._id = { $lt: lastId };
@@ -256,7 +277,7 @@ const ListContents = async (req, res) => {
       await getUserData(user);
     const engagementScores = await getEngagementScores();
 
-    console.log("Viewed Content IDs:", viewedContent);
+    console.log("Viewed content IDs:", viewedContent);
     console.log("User email:", user.email);
 
     const scoredContent = await fetchAndScoreContent(
@@ -296,6 +317,14 @@ const ListContents = async (req, res) => {
     console.log(
       "Final content IDs:",
       finalContent.map((c) => c._id)
+    );
+    console.log(
+      "Scored content:",
+      scoredContent.map((c) => ({
+        _id: c._id,
+        score: c.score,
+        is_viewed: viewedContent.includes(c._id.toString()),
+      }))
     );
 
     return res.status(200).json(

@@ -71,6 +71,11 @@ const ListContents = async (req, res) => {
       createdAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
     }).distinct("uid");
 
+    // Get viewed content for the user
+    const viewedContent = await Content.find({
+      viewedBy: user?.email,
+    }).distinct("_id");
+
     // Get engagement metrics for content ranking
     const engagementMetrics = await Content.aggregate([
       {
@@ -92,11 +97,12 @@ const ListContents = async (req, res) => {
       {
         $project: {
           _id: 1,
+          views: 1,
           engagementScore: {
             $add: [
               { $multiply: [{ $size: "$likes" }, 1] },
               { $multiply: [{ $size: "$comments" }, 2] },
-              { $multiply: [{ $ifNull: ["$views", 0] }, 0.1] }, // Include views
+              { $multiply: [{ $ifNull: ["$views", 0] }, 0.1] },
             ],
           },
         },
@@ -107,36 +113,37 @@ const ListContents = async (req, res) => {
     const engagementScores = new Map(
       engagementMetrics.map((item) => [
         item._id.toString(),
-        item.engagementScore,
+        { engagementScore: item.engagementScore, views: item.views },
       ])
     );
 
     // Fetch content with separate queries for following and non-following
     const [followingContent, otherContent] = await Promise.all([
-      // Content from followed users
       Content.find({
         ...filters,
         "author.email": { $in: followingEmails },
       })
         .sort({ _id: -1 })
-        .limit(pageSize)
+        .limit(pageSize * 2) // Fetch more to account for filtering
         .lean(),
-
-      // Content from non-followed users
       Content.find({
         ...filters,
         "author.email": { $nin: followingEmails },
       })
         .sort({ _id: -1 })
-        .limit(pageSize)
+        .limit(pageSize * 2)
         .lean(),
     ]);
 
     // Combine and calculate scores for all content
     const allContent = await Promise.all(
       [...followingContent, ...otherContent].map(async (content) => {
-        const baseEngagementScore =
-          engagementScores.get(content._id.toString()) || 0;
+        const metrics = engagementScores.get(content._id.toString()) || {
+          engagementScore: 0,
+          views: 0,
+        };
+        const baseEngagementScore = metrics.engagementScore;
+        const views = metrics.views;
         const timeDecay = getTimeDecayScore(content.createdAt);
         const qualityScore = await calculateQualityScore(content);
 
@@ -159,11 +166,16 @@ const ListContents = async (req, res) => {
           ? 1.2
           : 1;
 
-        // Calculate viral coefficient (simplified)
-        const viralCoefficient = baseEngagementScore > 100 ? 1.5 : 1;
+        // Penalize viewed content
+        const viewedPenalty = viewedContent.includes(content._id.toString())
+          ? 0.5
+          : 1;
 
-        // Boosted content gets priority
-        const boostMultiplier = content.isBoosted ? 2 : 1;
+        // Boost only if views > 1000
+        const boostMultiplier = views > 1000 ? 2 : 1;
+
+        // Calculate viral coefficient
+        const viralCoefficient = baseEngagementScore > 100 ? 1.5 : 1;
 
         // Final score calculation
         const finalScore =
@@ -173,6 +185,7 @@ const ListContents = async (req, res) => {
           interestMatchScore *
           relationshipBoost *
           recentInteractionBoost *
+          viewedPenalty *
           viralCoefficient *
           boostMultiplier;
 

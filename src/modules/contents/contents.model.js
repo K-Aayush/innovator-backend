@@ -26,7 +26,8 @@ const contentSchema = new Schema(
       email: gen.required(String),
       _id: String,
     },
-    views: { type: Number, default: 0 }, // Added views field
+    views: { type: Number, default: 0 },
+    viewedBy: [{ type: String }],
     isShared: { type: Boolean, default: false },
     originalContent: {
       _id: String,

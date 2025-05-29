@@ -4,14 +4,26 @@ const GenRes = require("../../utils/routers/GenRes");
 const IncrementView = async (req, res) => {
   try {
     const { id } = req.params;
-    const content = await Content.findByIdAndUpdate(
-      id,
-      { $inc: { views: 1 } },
-      { new: true }
-    );
+    const user = req?.user;
+
+    if (!user?.email) {
+      return res
+        .status(401)
+        .json(GenRes(401, null, null, "User not authenticated"));
+    }
+
+    const content = await Content.findById(id);
     if (!content) {
       return res.status(404).json(GenRes(404, null, null, "Content not found"));
     }
+
+    // Check if the user has already viewed this content
+    if (!content.viewedBy.includes(user.email)) {
+      content.views += 1;
+      content.viewedBy.push(user.email);
+      await content.save();
+    }
+
     return res
       .status(200)
       .json(GenRes(200, { views: content.views }, null, "View recorded"));

@@ -4,12 +4,13 @@ const Likes = require("../likes/likes.model");
 const Comments = require("../comments/comments.model");
 const Content = require("../contents/contents.model");
 const User = require("../user/user.model");
+const axios = require("axios");
 
 // Time decay calculation
 const getTimeDecayScore = (createdAt) => {
   const hoursOld =
     (Date.now() - new Date(createdAt).getTime()) / (1000 * 60 * 60);
-  return 1 / (1 + Math.sqrt(hoursOld));
+  return 1 / (1 + Math.sqrt(Math.max(hoursOld, 0.1)));
 };
 
 // Quality score based on media and author level
@@ -20,13 +21,14 @@ const calculateQualityScore = async (content) => {
   return score;
 };
 
-// Fetch user data including interests, followings, likes, views
+// Fetch user data
 const getUserData = async (user) => {
   const userDetails = await User.findById(user._id).lean();
   const followings = await Follow.find({ "follower.email": user.email });
   const followingEmails = followings.map((f) => f.following.email);
   const recentLikes = await Likes.find({
     "user.email": user.email,
+    type: "content",
     createdAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
   }).distinct("uid");
   const viewedContent = await Content.find({ viewedBy: user.email }).distinct(
@@ -45,6 +47,7 @@ const getEngagementScores = async () => {
         localField: "_id",
         foreignField: "uid",
         as: "likes",
+        pipeline: [{ $match: { type: "content" } }],
       },
     },
     {
@@ -53,6 +56,7 @@ const getEngagementScores = async () => {
         localField: "_id",
         foreignField: "uid",
         as: "comments",
+        pipeline: [{ $match: { type: "content" } }],
       },
     },
     {
@@ -81,56 +85,28 @@ const fetchAndScoreContent = async (
   engagementScores,
   userInterests,
   recentLikes,
-  userEmail,
   pageSize,
   isRefresh
 ) => {
-  const fetchSize = pageSize * 5;
+  const fetchSize = pageSize * 4;
 
-  // Base query with filters
   const query = {
     ...filters,
     $or: [
-      { "author.email": { $in: emails } }, // Content from followed users
-      { "author.email": { $nin: emails } }, // Content from others
+      { "author.email": { $in: emails } },
+      { "author.email": { $nin: emails } },
     ],
   };
 
-  // On refresh, only fetch unseen content initially
-  let contents = [];
-  if (isRefresh) {
-    contents = await Content.find({
-      ...query,
-      _id: { $nin: viewedContent },
-    })
-      .sort({ _id: -1 })
-      .limit(fetchSize)
-      .lean();
-  } else {
-    // For scrolling, fetch unseen content first
-    contents = await Content.find({
-      ...query,
-      _id: { $nin: viewedContent },
-    })
-      .sort({ _id: -1 })
-      .limit(fetchSize)
-      .lean();
+  let contents = await Content.find({
+    ...query,
+    _id: { $nin: viewedContent },
+  })
+    .sort({ _id: -1 })
+    .limit(fetchSize)
+    .lean();
 
-    // If not enough unseen content, fetch viewed content as fallback
-    if (contents.length < pageSize) {
-      const viewedContents = await Content.find({
-        ...query,
-        _id: { $in: viewedContent },
-      })
-        .sort({ _id: -1 })
-        .limit(fetchSize - contents.length)
-        .lean();
-      contents = [...contents, ...viewedContents];
-    }
-  }
-
-  // If refresh and still not enough content, fetch viewed content
-  if (isRefresh && contents.length < pageSize) {
+  if (contents.length < pageSize && !isRefresh) {
     const viewedContents = await Content.find({
       ...query,
       _id: { $in: viewedContent },
@@ -139,9 +115,29 @@ const fetchAndScoreContent = async (
       .limit(fetchSize - contents.length)
       .lean();
     contents = [...contents, ...viewedContents];
+  } else if (isRefresh && contents.length < pageSize) {
+    const viewedContents = await Content.find({
+      ...query,
+      _id: { $in: viewedContent },
+      views: { $lt: 100 },
+    })
+      .sort({ _id: -1 })
+      .limit(fetchSize - contents.length)
+      .lean();
+    contents = [...contents, ...viewedContents];
+    if (contents.length < pageSize) {
+      const remainingViewed = await Content.find({
+        ...query,
+        _id: { $in: viewedContent },
+        views: { $gte: 100 },
+      })
+        .sort({ _id: -1 })
+        .limit(fetchSize - contents.length)
+        .lean();
+      contents = [...contents, ...remainingViewed];
+    }
   }
 
-  // Deduplicate content by _id
   const seenIds = new Set();
   contents = contents.filter((c) => {
     if (seenIds.has(c._id.toString())) return false;
@@ -149,7 +145,6 @@ const fetchAndScoreContent = async (
     return true;
   });
 
-  // Score content
   const scored = await Promise.all(
     contents.map(async (c) => {
       const metrics = engagementScores.get(c._id.toString()) || {
@@ -158,40 +153,65 @@ const fetchAndScoreContent = async (
       };
       const qualityScore = await calculateQualityScore(c);
 
-      const interestMatch = userInterests.some((i) =>
-        c.status?.toLowerCase().includes(i.toLowerCase())
-      )
-        ? 1.3
-        : 1;
-      const relationshipBoost = emails.includes(c.author.email) ? 1.5 : 1;
-      const recentInteraction = recentLikes.includes(c._id.toString())
-        ? 1.2
-        : 1;
-      const viewedPenalty = viewedContent.includes(c._id.toString()) ? 0.05 : 1; // Stronger penalty
-      const viral = metrics.engagementScore > 100 ? 1.5 : 1;
-      const boost = metrics.views > 1000 ? 2 : 1;
-      const random = 1 + Math.random() * 0.1;
+      const features = {
+        engagement_score: metrics.engagementScore,
+        time_decay: getTimeDecayScore(c.createdAt),
+        has_media: c.files?.length ? 1 : 0,
+        is_bronze_author:
+          (await User.findOne({ email: c.author.email }).lean())?.level ===
+          "bronze"
+            ? 1
+            : 0,
+        interest_match: userInterests.some((i) =>
+          c.status?.toLowerCase().includes(i.toLowerCase())
+        )
+          ? 1
+          : 0,
+        is_following: emails.includes(c.author.email) ? 1 : 0,
+        recent_interaction: recentLikes.includes(c._id.toString()) ? 1 : 0,
+        is_viewed: viewedContent.includes(c._id.toString()) ? 1 : 0,
+        view_count: metrics.views,
+      };
 
-      const score =
-        metrics.engagementScore *
-        getTimeDecayScore(c.createdAt) *
-        qualityScore *
-        interestMatch *
-        relationshipBoost *
-        recentInteraction *
-        viewedPenalty *
-        viral *
-        boost *
-        random;
-      return { ...c, score };
+      try {
+        const response = await axios.post(
+          "http://127.0.0.1:27017:0548/predict",
+          features
+        );
+        const score = response.data.score * qualityScore;
+        return { ...c, score };
+      } catch (err) {
+        console.error("ML service error:", err.message);
+        const interestMatch = features.interest_match ? 1.3 : 1;
+        const relationshipBoost = features.is_following ? 1.5 : 1;
+        const recentInteraction = features.recent_interaction ? 1.2 : 1;
+        const viewedPenalty = features.is_viewed ? 0.01 : 1;
+        const viral = metrics.engagementScore > 100 ? 1.5 : 1;
+        const boost = metrics.views > 1000 ? 2 : 1;
+        const lessViewedBoost = metrics.views < 100 ? 1.4 : 1;
+        const random = 1 + Math.random() * 0.15;
+
+        const score =
+          metrics.engagementScore *
+          getTimeDecayScore(c.createdAt) *
+          qualityScore *
+          interestMatch *
+          relationshipBoost *
+          recentInteraction *
+          viewedPenalty *
+          viral *
+          boost *
+          lessViewedBoost *
+          random;
+        return { ...c, score };
+      }
     })
   );
 
-  // Sort and return scored content
   return scored.sort((a, b) => b.score - a.score);
 };
 
-// Add final metadata (likes/comments/follow) to content
+// Enrich content
 const enrichContent = async (items, userEmail) => {
   return Promise.all(
     items.map(async (item) => {
@@ -216,8 +236,8 @@ const ListContents = async (req, res) => {
   try {
     const { email, name, search, lastId, pageSize = 10 } = req.query;
     const user = req.user;
-    const pageSizeNum = parseInt(pageSize, 10) || 10; // Default to 10 if invalid
-    const isRefresh = !lastId; // Consider it a refresh if lastId is not provided
+    const pageSizeNum = parseInt(pageSize, 10) || 10;
+    const isRefresh = !lastId;
 
     const filters = {};
     if (email) filters["author.email"] = email;
@@ -247,7 +267,6 @@ const ListContents = async (req, res) => {
       isRefresh
     );
 
-    // Slice the content for the current page
     const finalContent = await enrichContent(
       scoredContent.slice(0, pageSizeNum),
       user.email

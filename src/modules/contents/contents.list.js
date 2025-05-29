@@ -82,39 +82,42 @@ const fetchAndScoreContent = async (
   userInterests,
   recentLikes,
   userEmail,
-  pageSize,
-  fetchedIds
+  pageSize
 ) => {
   const fetchSize = pageSize * 3; // Fetch more to ensure diversity
-  const fetchContent = async (emailsInList, excludeViewed = true) => {
-    const emailFilter = emailsInList.length
-      ? { "author.email": { $in: emailsInList } }
-      : {};
-    const viewFilter = excludeViewed
-      ? { _id: { $nin: [...viewedContent, ...fetchedIds] } }
-      : { _id: { $in: viewedContent, $nin: fetchedIds } };
-    return Content.find({ ...filters, ...emailFilter, ...viewFilter })
-      .sort({ _id: -1 })
-      .limit(fetchSize)
-      .lean();
+
+  // Single query to fetch content, prioritizing followed users and unseen content
+  const query = {
+    ...filters,
+    $or: [
+      { "author.email": { $in: emails } }, // Content from followed users
+      { "author.email": { $nin: emails } }, // Content from others
+    ],
   };
 
   // Fetch unseen content first
-  let contents = [
-    ...(await fetchContent(emails, true)),
-    ...(await fetchContent([], true)),
-  ];
+  let contents = await Content.find({
+    ...query,
+    _id: { $nin: viewedContent },
+  })
+    .sort({ _id: -1 })
+    .limit(fetchSize)
+    .lean();
 
   // If not enough unseen content, fetch viewed content as fallback
   if (contents.length < pageSize) {
-    contents.push(
-      ...(await fetchContent(emails, false)),
-      ...(await fetchContent([], false))
-    );
+    const viewedContents = await Content.find({
+      ...query,
+      _id: { $in: viewedContent },
+    })
+      .sort({ _id: -1 })
+      .limit(fetchSize - contents.length)
+      .lean();
+    contents = [...contents, ...viewedContents];
   }
 
   // Deduplicate content by _id
-  const seenIds = new Set(fetchedIds);
+  const seenIds = new Set();
   contents = contents.filter((c) => {
     if (seenIds.has(c._id.toString())) return false;
     seenIds.add(c._id.toString());
@@ -186,19 +189,9 @@ const enrichContent = async (items, userEmail) => {
 
 const ListContents = async (req, res) => {
   try {
-    const {
-      email,
-      name,
-      search,
-      lastId,
-      pageSize = 10,
-      fetchedIds = "",
-    } = req.query;
+    const { email, name, search, lastId, pageSize = 10 } = req.query;
     const user = req.user;
     const pageSizeNum = parseInt(pageSize, 10) || 10; // Default to 10 if invalid
-    const fetchedIdsArray = fetchedIds
-      ? fetchedIds.split(",").filter((id) => id)
-      : [];
 
     const filters = {};
     if (email) filters["author.email"] = email;
@@ -224,8 +217,7 @@ const ListContents = async (req, res) => {
       userDetails?.interests || [],
       recentLikes,
       user.email,
-      pageSizeNum,
-      fetchedIdsArray
+      pageSizeNum
     );
 
     // Slice the content for the current page
@@ -234,12 +226,6 @@ const ListContents = async (req, res) => {
       user.email
     );
     const hasMore = scoredContent.length > pageSizeNum;
-
-    // Update fetchedIds for the next request
-    const newFetchedIds = [
-      ...fetchedIdsArray,
-      ...finalContent.map((c) => c._id.toString()),
-    ].join(",");
 
     return res.status(200).json(
       GenRes(
@@ -250,7 +236,6 @@ const ListContents = async (req, res) => {
           nextCursor: hasMore
             ? finalContent[finalContent.length - 1]?._id || null
             : null,
-          fetchedIds: newFetchedIds, // Return updated fetchedIds
         },
         null,
         `Retrieved ${finalContent.length} content items`

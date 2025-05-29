@@ -117,7 +117,7 @@ const fetchAndScoreContent = async (
       ...query,
       _id: { $in: viewedContent },
     })
-      .sort({ views: 1, _id: -1 }) // Prioritize less viewed, then recent
+      .sort({ engagementScore: -1, _id: -1 }) // Prioritize engagement, then recency
       .limit(fetchSize - contents.length)
       .lean();
     console.log("Viewed contents length:", viewedContents.length);
@@ -168,8 +168,10 @@ const fetchAndScoreContent = async (
           features
         );
         let score = response.data.score * qualityScore;
-        // Apply additional penalty for viewed content
+        // Apply penalty for viewed content
         if (features.is_viewed) score *= 0.1;
+        // Add randomization for viewed content on refresh
+        if (features.is_viewed && isRefresh) score *= 0.8 + Math.random() * 0.4;
         console.log(
           `Scored content _id: ${c._id}, score: ${score}, is_viewed: ${features.is_viewed}`
         );
@@ -185,7 +187,7 @@ const fetchAndScoreContent = async (
         const lessViewedBoost = metrics.views < 100 ? 1.4 : 1;
         const random = 1 + Math.random() * 0.15;
 
-        const score =
+        let score =
           metrics.engagementScore *
           getTimeDecayScore(c.createdAt) *
           qualityScore *
@@ -197,6 +199,8 @@ const fetchAndScoreContent = async (
           boost *
           lessViewedBoost *
           random;
+        // Add randomization for viewed content on refresh
+        if (features.is_viewed && isRefresh) score *= 0.8 + Math.random() * 0.4;
         console.log(
           `Heuristic score for _id: ${c._id}, score: ${score}, is_viewed: ${features.is_viewed}`
         );
@@ -238,12 +242,12 @@ const ListContents = async (req, res) => {
 
     const filters = {};
     if (email) filters["author.email"] = email;
-    if (name) filters["author.name"] = { $regex: name, $options: "i" };
+    if (name) filters["author.name"] = { regex: name, options: "i" };
     if (search) {
       filters.$or = [
-        { "author.name": { $regex: search, $options: "i" } },
-        { "author.email": { $regex: search, $options: "i" } },
-        { status: { $regex: search, $options: "i" } },
+        { "author.name": { regex: search, options: "i" } },
+        { "author.email": { regex: search, options: "i" } },
+        { status: { regex: search, options: "i" } },
       ];
     }
     if (lastId) filters._id = { $lt: lastId };
@@ -252,7 +256,7 @@ const ListContents = async (req, res) => {
       await getUserData(user);
     const engagementScores = await getEngagementScores();
 
-    console.log("Viewed content IDs:", viewedContent);
+    console.log("Viewed Content IDs:", viewedContent);
     console.log("User email:", user.email);
 
     const scoredContent = await fetchAndScoreContent(
@@ -288,6 +292,11 @@ const ListContents = async (req, res) => {
       user.email
     );
     const hasMore = scoredContent.length > pageSizeNum;
+
+    console.log(
+      "Final content IDs:",
+      finalContent.map((c) => c._id)
+    );
 
     return res.status(200).json(
       GenRes(

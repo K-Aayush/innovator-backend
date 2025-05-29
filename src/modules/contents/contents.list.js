@@ -82,7 +82,8 @@ const fetchAndScoreContent = async (
   userInterests,
   recentLikes,
   userEmail,
-  pageSize
+  pageSize,
+  fetchedIds
 ) => {
   const fetchSize = pageSize * 3; // Fetch more to ensure diversity
   const fetchContent = async (emailsInList, excludeViewed = true) => {
@@ -90,8 +91,8 @@ const fetchAndScoreContent = async (
       ? { "author.email": { $in: emailsInList } }
       : {};
     const viewFilter = excludeViewed
-      ? { _id: { $nin: viewedContent } }
-      : { _id: { $in: viewedContent } };
+      ? { _id: { $nin: [...viewedContent, ...fetchedIds] } }
+      : { _id: { $in: viewedContent, $nin: fetchedIds } };
     return Content.find({ ...filters, ...emailFilter, ...viewFilter })
       .sort({ _id: -1 })
       .limit(fetchSize)
@@ -111,6 +112,14 @@ const fetchAndScoreContent = async (
       ...(await fetchContent([], false))
     );
   }
+
+  // Deduplicate content by _id
+  const seenIds = new Set(fetchedIds);
+  contents = contents.filter((c) => {
+    if (seenIds.has(c._id.toString())) return false;
+    seenIds.add(c._id.toString());
+    return true;
+  });
 
   // Score content
   const scored = await Promise.all(
@@ -150,7 +159,7 @@ const fetchAndScoreContent = async (
     })
   );
 
-  // Sort and return all scored content (don't slice yet)
+  // Sort and return scored content
   return scored.sort((a, b) => b.score - a.score);
 };
 
@@ -177,9 +186,19 @@ const enrichContent = async (items, userEmail) => {
 
 const ListContents = async (req, res) => {
   try {
-    const { email, name, search, lastId, pageSize = 10 } = req.query;
+    const {
+      email,
+      name,
+      search,
+      lastId,
+      pageSize = 10,
+      fetchedIds = "",
+    } = req.query;
     const user = req.user;
     const pageSizeNum = parseInt(pageSize, 10) || 10; // Default to 10 if invalid
+    const fetchedIdsArray = fetchedIds
+      ? fetchedIds.split(",").filter((id) => id)
+      : [];
 
     const filters = {};
     if (email) filters["author.email"] = email;
@@ -205,7 +224,8 @@ const ListContents = async (req, res) => {
       userDetails?.interests || [],
       recentLikes,
       user.email,
-      pageSizeNum
+      pageSizeNum,
+      fetchedIdsArray
     );
 
     // Slice the content for the current page
@@ -214,6 +234,12 @@ const ListContents = async (req, res) => {
       user.email
     );
     const hasMore = scoredContent.length > pageSizeNum;
+
+    // Update fetchedIds for the next request
+    const newFetchedIds = [
+      ...fetchedIdsArray,
+      ...finalContent.map((c) => c._id.toString()),
+    ].join(",");
 
     return res.status(200).json(
       GenRes(
@@ -224,6 +250,7 @@ const ListContents = async (req, res) => {
           nextCursor: hasMore
             ? finalContent[finalContent.length - 1]?._id || null
             : null,
+          fetchedIds: newFetchedIds, // Return updated fetchedIds
         },
         null,
         `Retrieved ${finalContent.length} content items`

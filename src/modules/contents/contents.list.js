@@ -82,11 +82,12 @@ const fetchAndScoreContent = async (
   userInterests,
   recentLikes,
   userEmail,
-  pageSize
+  pageSize,
+  isRefresh
 ) => {
-  const fetchSize = pageSize * 3; // Fetch more to ensure diversity
+  const fetchSize = pageSize * 5;
 
-  // Single query to fetch content, prioritizing followed users and unseen content
+  // Base query with filters
   const query = {
     ...filters,
     $or: [
@@ -95,17 +96,41 @@ const fetchAndScoreContent = async (
     ],
   };
 
-  // Fetch unseen content first
-  let contents = await Content.find({
-    ...query,
-    _id: { $nin: viewedContent },
-  })
-    .sort({ _id: -1 })
-    .limit(fetchSize)
-    .lean();
+  // On refresh, only fetch unseen content initially
+  let contents = [];
+  if (isRefresh) {
+    contents = await Content.find({
+      ...query,
+      _id: { $nin: viewedContent },
+    })
+      .sort({ _id: -1 })
+      .limit(fetchSize)
+      .lean();
+  } else {
+    // For scrolling, fetch unseen content first
+    contents = await Content.find({
+      ...query,
+      _id: { $nin: viewedContent },
+    })
+      .sort({ _id: -1 })
+      .limit(fetchSize)
+      .lean();
 
-  // If not enough unseen content, fetch viewed content as fallback
-  if (contents.length < pageSize) {
+    // If not enough unseen content, fetch viewed content as fallback
+    if (contents.length < pageSize) {
+      const viewedContents = await Content.find({
+        ...query,
+        _id: { $in: viewedContent },
+      })
+        .sort({ _id: -1 })
+        .limit(fetchSize - contents.length)
+        .lean();
+      contents = [...contents, ...viewedContents];
+    }
+  }
+
+  // If refresh and still not enough content, fetch viewed content
+  if (isRefresh && contents.length < pageSize) {
     const viewedContents = await Content.find({
       ...query,
       _id: { $in: viewedContent },
@@ -142,7 +167,7 @@ const fetchAndScoreContent = async (
       const recentInteraction = recentLikes.includes(c._id.toString())
         ? 1.2
         : 1;
-      const viewedPenalty = viewedContent.includes(c._id.toString()) ? 0.1 : 1;
+      const viewedPenalty = viewedContent.includes(c._id.toString()) ? 0.05 : 1; // Stronger penalty
       const viral = metrics.engagementScore > 100 ? 1.5 : 1;
       const boost = metrics.views > 1000 ? 2 : 1;
       const random = 1 + Math.random() * 0.1;
@@ -192,6 +217,7 @@ const ListContents = async (req, res) => {
     const { email, name, search, lastId, pageSize = 10 } = req.query;
     const user = req.user;
     const pageSizeNum = parseInt(pageSize, 10) || 10; // Default to 10 if invalid
+    const isRefresh = !lastId; // Consider it a refresh if lastId is not provided
 
     const filters = {};
     if (email) filters["author.email"] = email;
@@ -217,7 +243,8 @@ const ListContents = async (req, res) => {
       userDetails?.interests || [],
       recentLikes,
       user.email,
-      pageSizeNum
+      pageSizeNum,
+      isRefresh
     );
 
     // Slice the content for the current page

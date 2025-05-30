@@ -5,6 +5,7 @@ const Comments = require("../comments/comments.model");
 const Content = require("../contents/contents.model");
 const User = require("../user/user.model");
 const axios = require("axios");
+const { ObjectId } = require("mongoose").Types;
 
 // Time decay calculation
 const getTimeDecayScore = (createdAt) => {
@@ -40,9 +41,11 @@ const getUserData = async (user) => {
     type: "content",
     createdAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
   }).distinct("uid");
-  const viewedContent = await Content.find({ viewedBy: user.email }).distinct(
-    "_id"
-  );
+  const viewedContent = await Content.find({ viewedBy: user.email })
+    .distinct("_id")
+    .then((ids) => ids.map((id) => id.toString()));
+
+  console.log("Fetched viewedContent IDs:", viewedContent);
 
   return { userDetails, followingEmails, recentLikes, viewedContent };
 };
@@ -111,7 +114,7 @@ const fetchAndScoreContent = async (
   // Fetch unseen content
   let contents = await Content.find({
     ...query,
-    _id: { $nin: viewedContent },
+    _id: { $nin: viewedContent.map((id) => new ObjectId(id)) },
   })
     .sort({ _id: -1 })
     .limit(fetchSize)
@@ -124,7 +127,7 @@ const fetchAndScoreContent = async (
   if (contents.length < pageSize || isRefresh) {
     viewedContents = await Content.find({
       ...query,
-      _id: { $in: viewedContent },
+      _id: { $in: viewedContent.map((id) => new ObjectId(id)) },
     })
       .sort({ _id: -1 })
       .limit(fetchSize - contents.length)
@@ -183,17 +186,14 @@ const fetchAndScoreContent = async (
         view_count: metrics.views,
       };
 
+      let score;
       try {
         const response = await axios.post(
           "http://182.93.94.210:0548/predict",
           features
         );
-        let score = response.data.score * qualityScore;
+        score = response.data.score * qualityScore;
         if (features.is_viewed) score *= 0.1;
-        console.log(
-          `Scored content _id: ${c._id}, score: ${score}, is_viewed: ${features.is_viewed}`
-        );
-        return { ...c, score };
       } catch (err) {
         console.error(`ML service error for _id: ${c._id}:`, err.message);
         const interestMatch = features.interest_match ? 1.3 : 1;
@@ -205,8 +205,8 @@ const fetchAndScoreContent = async (
         const lessViewedBoost = metrics.views < 100 ? 1.4 : 1;
         const random = 1 + Math.random() * 0.15;
 
-        const score =
-          metrics.engagementScore *
+        score =
+          (metrics.engagementScore + 1) * // Avoid zero
           getTimeDecayScore(c.createdAt) *
           qualityScore *
           interestMatch *
@@ -217,17 +217,23 @@ const fetchAndScoreContent = async (
           boost *
           lessViewedBoost *
           random;
-        console.log(
-          `Heuristic score for _id: ${c._id}, score: ${score}, is_viewed: ${features.is_viewed}`
-        );
-        return { ...c, score };
       }
+      console.log(
+        `Scored content _id: ${c._id}, score: ${score}, is_viewed: ${features.is_viewed}`
+      );
+      return { ...c, score: score || Math.random() }; // Fallback to random
     })
   );
 
   // Sort by score unless all viewed
   if (!scored.every((c) => viewedContent.includes(c._id.toString()))) {
     scored.sort((a, b) => b.score - a.score);
+  } else {
+    // Ensure randomization persists
+    console.log(
+      "All viewed, preserving shuffle:",
+      scored.map((c) => c._id)
+    );
   }
 
   return scored;

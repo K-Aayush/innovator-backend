@@ -8,6 +8,94 @@ const Follow = require("../follow/follow.model");
 const { isValidObjectId } = require("mongoose");
 const FCMHandler = require("../../utils/notification/fcmHandler");
 
+// Get user content
+const GetUserContent = async (req, res) => {
+  try {
+    const userId = req.params.id;
+    const page = parseInt(req.query.page) || 0;
+    const limit = 10;
+
+    if (!isValidObjectId(userId)) {
+      return res
+        .status(400)
+        .json(
+          GenRes(
+            400,
+            null,
+            { error: "Invalid user ID" },
+            "Invalid user ID provided"
+          )
+        );
+    }
+
+    const user = await User.findById(userId).select("email name picture");
+    if (!user) {
+      return res
+        .status(404)
+        .json(GenRes(404, null, { error: "User not found" }, "User not found"));
+    }
+
+    const [contents, totalPosts] = await Promise.all([
+      Content.find({ "author._id": userId })
+        .sort({ createdAt: -1 })
+        .skip(page * limit)
+        .limit(limit)
+        .lean(),
+      Content.countDocuments({ "author._id": userId }),
+    ]);
+
+    // Enrich content with likes and comments count
+    const enrichedContents = await Promise.all(
+      contents.map(async (content) => {
+        const [likes, comments] = await Promise.all([
+          Like.countDocuments({ uid: content._id, type: "content" }),
+          Comment.countDocuments({ uid: content._id, type: "content" }),
+        ]);
+
+        const liked = req.user
+          ? await Like.findOne({
+              uid: content._id,
+              type: "content",
+              "user.email": req.user.email,
+            })
+          : null;
+
+        return {
+          ...content,
+          likes,
+          comments,
+          liked: !!liked,
+        };
+      })
+    );
+
+    return res.status(200).json(
+      GenRes(
+        200,
+        {
+          user: {
+            _id: user._id,
+            name: user.name,
+            email: user.email,
+            picture: user.picture,
+          },
+          contents: enrichedContents,
+          pagination: {
+            page,
+            totalPages: Math.ceil(totalPosts / limit),
+            totalPosts,
+            hasMore: (page + 1) * limit < totalPosts,
+          },
+        },
+        null,
+        "User content retrieved successfully"
+      )
+    );
+  } catch (error) {
+    return res.status(500).json(GenRes(500, null, error, error.message));
+  }
+};
+
 // check if user exists
 const UserExist = async (req, res) => {
   try {
@@ -487,4 +575,5 @@ module.exports = {
   SubmitSupport,
   GetUserReports,
   GetUserSupport,
+  GetUserContent,
 };

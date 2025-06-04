@@ -1,7 +1,6 @@
 const router = require("express").Router();
 const basicMiddleware = require("../../middlewares/basicMiddleware");
 const {
-  registerMiddleware,
   optionalFirebaseMiddleware,
 } = require("../../middlewares/firebaseMiddleware");
 const UserFiles = require("../../utils/fileProcessor/multer.users");

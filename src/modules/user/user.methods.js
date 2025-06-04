@@ -1,4 +1,5 @@
 const User = require("./user.model");
+const Content = require("../contents/contents.model");
 const Report = require("./report.model");
 const Support = require("./support.model");
 const { setCode, verifyCode } = require("../../utils/auth/changePass");
@@ -41,7 +42,7 @@ const GetUserContent = async (req, res) => {
         .skip(page * limit)
         .limit(limit)
         .lean(),
-      Content.countDocuments({ "author._id": userId }),
+      Content.countDocuments({ "author._id": userId }), // Fixed: Use Content model
     ]);
 
     // Enrich content with likes and comments count

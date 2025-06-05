@@ -6,6 +6,8 @@ const { setCode, verifyCode } = require("../../utils/auth/changePass");
 const bcrypt = require("bcryptjs");
 const GenRes = require("../../utils/routers/GenRes");
 const Follow = require("../follow/follow.model");
+const Like = require("../likes/likes.model");
+const Comment = require("../comments/comments.model");
 const { isValidObjectId } = require("mongoose");
 const FCMHandler = require("../../utils/notification/fcmHandler");
 
@@ -42,7 +44,7 @@ const GetUserContent = async (req, res) => {
         .skip(page * limit)
         .limit(limit)
         .lean(),
-      Content.countDocuments({ "author._id": userId }), // Fixed: Use Content model
+      Content.countDocuments({ "author._id": userId }),
     ]);
 
     // Enrich content with likes and comments count

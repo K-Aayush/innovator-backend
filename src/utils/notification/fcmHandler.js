@@ -19,8 +19,10 @@ class FCMHandler {
         },
         data: {
           type: notification.type,
-          click_action: notification.click_action || "",
-          ...notification.data,
+          click_action:
+            notification.click_action || "FLUTTER_NOTIFICATION_CLICK",
+          screen: notification.screen || "home",
+          ...this._sanitizeData(notification.data || {}),
         },
         android: {
           notification: {
@@ -28,30 +30,57 @@ class FCMHandler {
             color: "#4A90E2",
             sound: "default",
             priority: "high",
-            channelId: "default",
+            channelId: this._getChannelId(notification.type),
+            visibility: "public",
+            importance: "high",
+            vibrationPattern: [0, 250, 250, 250],
           },
+          priority: "high",
         },
         apns: {
+          headers: {
+            "apns-priority": "10",
+          },
           payload: {
             aps: {
-              "mutable-content": 1,
+              alert: {
+                title: notification.title,
+                body: notification.body,
+              },
+              badge: 1,
               sound: "default",
+              "mutable-content": 1,
+              "content-available": 1,
+              category: notification.type,
             },
+          },
+        },
+        webpush: {
+          notification: {
+            icon: notification.image || "/icon.png",
+            badge: "/badge.png",
+            vibrate: [100, 50, 100],
+            requireInteraction: true,
+          },
+          fcmOptions: {
+            link: notification.click_action,
           },
         },
         tokens: user.fcmTokens,
       };
 
-      // Use sendEachForMulticast instead of sendMulticast
       const response = await firebaseAdmin
         .messaging()
         .sendEachForMulticast(message);
 
-      // Handle invalid tokens
       if (response.failureCount > 0) {
         const invalidTokens = [];
         response.responses.forEach((resp, idx) => {
           if (!resp.success) {
+            console.error(
+              `FCM send failed for token: ${user.fcmTokens[idx]}`,
+              resp.error
+            );
             invalidTokens.push(user.fcmTokens[idx]);
           }
         });
@@ -62,20 +91,39 @@ class FCMHandler {
             { $pull: { fcmTokens: { $in: invalidTokens } } }
           );
           console.log(
-            `Removed invalid tokens for user ${userId}:`,
-            invalidTokens
+            `Removed ${invalidTokens.length} invalid tokens for user ${userId}`
           );
         }
       }
 
-      return response;
+      return {
+        success: true,
+        successCount: response.successCount,
+        failureCount: response.failureCount,
+      };
     } catch (error) {
       console.error("Error sending FCM notification:", error);
-      throw error; 
+      throw error;
     }
   }
 
-  // Update sendToMultipleUsers similarly
+  static _getChannelId(type) {
+    const highPriorityTypes = ["message", "like", "comment"];
+    return highPriorityTypes.includes(type)
+      ? "high_importance_channel"
+      : "regular_channel";
+  }
+
+  static _sanitizeData(data) {
+    // Convert all values to strings to ensure FCM compatibility
+    const sanitized = {};
+    for (const [key, value] of Object.entries(data)) {
+      sanitized[key] =
+        typeof value === "object" ? JSON.stringify(value) : String(value);
+    }
+    return sanitized;
+  }
+
   static async sendToMultipleUsers(userIds, notification) {
     try {
       const users = await User.find({ _id: { $in: userIds } })
@@ -102,8 +150,10 @@ class FCMHandler {
         },
         data: {
           type: notification.type,
-          click_action: notification.click_action || "",
-          ...notification.data,
+          click_action:
+            notification.click_action || "FLUTTER_NOTIFICATION_CLICK",
+          screen: notification.screen || "home",
+          ...this._sanitizeData(notification.data || {}),
         },
         android: {
           notification: {
@@ -111,15 +161,40 @@ class FCMHandler {
             color: "#4A90E2",
             sound: "default",
             priority: "high",
-            channelId: "default",
+            channelId: this._getChannelId(notification.type),
+            visibility: "public",
+            importance: "high",
+            vibrationPattern: [0, 250, 250, 250],
           },
+          priority: "high",
         },
         apns: {
+          headers: {
+            "apns-priority": "10",
+          },
           payload: {
             aps: {
-              "mutable-content": 1,
+              alert: {
+                title: notification.title,
+                body: notification.body,
+              },
+              badge: 1,
               sound: "default",
+              "mutable-content": 1,
+              "content-available": 1,
+              category: notification.type,
             },
+          },
+        },
+        webpush: {
+          notification: {
+            icon: notification.image || "/icon.png",
+            badge: "/badge.png",
+            vibrate: [100, 50, 100],
+            requireInteraction: true,
+          },
+          fcmOptions: {
+            link: notification.click_action,
           },
         },
         tokens,
@@ -133,6 +208,10 @@ class FCMHandler {
         const invalidTokens = [];
         response.responses.forEach((resp, idx) => {
           if (!resp.success) {
+            console.error(
+              `FCM send failed for token: ${tokens[idx]}`,
+              resp.error
+            );
             invalidTokens.push(tokens[idx]);
           }
         });
@@ -142,11 +221,15 @@ class FCMHandler {
             { fcmTokens: { $in: invalidTokens } },
             { $pull: { fcmTokens: { $in: invalidTokens } } }
           );
-          console.log("Removed invalid tokens:", invalidTokens);
+          console.log(`Removed ${invalidTokens.length} invalid tokens`);
         }
       }
 
-      return response;
+      return {
+        success: true,
+        successCount: response.successCount,
+        failureCount: response.failureCount,
+      };
     } catch (error) {
       console.error("Error sending FCM notifications:", error);
       throw error;
@@ -163,8 +246,10 @@ class FCMHandler {
         },
         data: {
           type: notification.type,
-          click_action: notification.click_action || "",
-          ...notification.data,
+          click_action:
+            notification.click_action || "FLUTTER_NOTIFICATION_CLICK",
+          screen: notification.screen || "home",
+          ...this._sanitizeData(notification.data || {}),
         },
         android: {
           notification: {
@@ -172,21 +257,47 @@ class FCMHandler {
             color: "#4A90E2",
             sound: "default",
             priority: "high",
-            channelId: "default",
+            channelId: this._getChannelId(notification.type),
+            visibility: "public",
+            importance: "high",
+            vibrationPattern: [0, 250, 250, 250],
           },
+          priority: "high",
         },
         apns: {
+          headers: {
+            "apns-priority": "10",
+          },
           payload: {
             aps: {
-              "mutable-content": 1,
+              alert: {
+                title: notification.title,
+                body: notification.body,
+              },
+              badge: 1,
               sound: "default",
+              "mutable-content": 1,
+              "content-available": 1,
+              category: notification.type,
             },
+          },
+        },
+        webpush: {
+          notification: {
+            icon: notification.image || "/icon.png",
+            badge: "/badge.png",
+            vibrate: [100, 50, 100],
+            requireInteraction: true,
+          },
+          fcmOptions: {
+            link: notification.click_action,
           },
         },
         topic,
       };
 
-      return await firebaseAdmin.messaging().send(message);
+      const response = await firebaseAdmin.messaging().send(message);
+      return { success: true, messageId: response };
     } catch (error) {
       console.error("Error sending FCM topic notification:", error);
       throw error;

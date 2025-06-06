@@ -5,8 +5,8 @@ const Likes = require("../likes/likes.model");
 const Comment = require("../comments/comments.model");
 const GenRes = require("../../utils/routers/GenRes");
 const axios = require("axios");
-const { ObjectId } = require("mongoose");
 const NodeCache = require("node-cache");
+const mongoose = require("mongoose");
 
 // Initialize cache with 5 minutes TTL
 const contentCache = new NodeCache({ stdTTL: 300 });
@@ -113,7 +113,6 @@ const getEngagementScores = async () => {
   return scores;
 };
 
-// Fetch and score content with caching
 const fetchAndScoreContent = async (
   filters,
   emails,
@@ -136,6 +135,15 @@ const fetchAndScoreContent = async (
 
   const fetchSize = pageSize * 4;
 
+  // Validate viewedContent IDs
+  const validObjectIds = viewedContent.filter((id) => {
+    if (typeof id !== "string" || !mongoose.Types.ObjectId.isValid(id)) {
+      console.warn(`Invalid ObjectId in viewedContent: ${id}`);
+      return false;
+    }
+    return true;
+  });
+
   const query = {
     ...filters,
     $or: [
@@ -143,12 +151,14 @@ const fetchAndScoreContent = async (
       { "author.email": { $nin: emails } },
     ],
   };
+  if (validObjectIds.length > 0) {
+    query._id = {
+      $nin: validObjectIds.map((id) => new mongoose.Types.ObjectId(id)),
+    };
+  }
 
   // Fetch unseen content
-  let contents = await Content.find({
-    ...query,
-    _id: { $nin: viewedContent.map((id) => new ObjectId(id)) },
-  })
+  let contents = await Content.find(query)
     .sort({ _id: -1 })
     .limit(fetchSize)
     .lean();
@@ -156,9 +166,18 @@ const fetchAndScoreContent = async (
   // Fetch viewed content if needed
   let viewedContents = [];
   if (contents.length < pageSize || isRefresh) {
+    const validViewedObjectIds = viewedContent.filter((id) => {
+      if (typeof id !== "string" || !mongoose.Types.ObjectId.isValid(id)) {
+        console.warn(`Invalid ObjectId in viewedContent for $in: ${id}`);
+        return false;
+      }
+      return true;
+    });
     viewedContents = await Content.find({
       ...query,
-      _id: { $in: viewedContent.map((id) => new ObjectId(id)) },
+      _id: {
+        $in: validViewedObjectIds.map((id) => new mongoose.Types.ObjectId(id)),
+      },
     })
       .sort({ _id: -1 })
       .limit(fetchSize - contents.length)

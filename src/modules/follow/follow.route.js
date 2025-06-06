@@ -13,7 +13,6 @@ const {
 
 // Validate ObjectId middleware
 const validateObjectId = (req, res, next) => {
-  mediator(req, res, next);
   const { id } = req.params;
   if (id && !isValidObjectId(id)) {
     return res.status(400).json({
@@ -26,20 +25,20 @@ const validateObjectId = (req, res, next) => {
 };
 
 // Validate UpdateFollow request body
-const validateUpdateFollow = (req, res, next) => {
-  const { email, action } = req.body;
-  if (!email || !action || !["follow", "unfollow"].includes(action)) {
-    return res.status(400).json({
-      status: 400,
-      error: "Invalid request body",
-      message: "Email and valid action (follow/unfollow) are required",
-    });
-  }
-  next();
-};
+// const validateUpdateFollow = (req, res, next) => {
+//   const { email, action } = req.body;
+//   if (!email || !action || !["follow", "unfollow"].includes(action)) {
+//     return res.status(400).json({
+//       status: 400,
+//       error: "Invalid request body",
+//       message: "Email and valid action (follow/unfollow) are required",
+//     });
+//   }
+//   next();
+// };
 
 // Routes
-router.post("/follow", basicMiddleware, validateUpdateFollow, UpdateFollow);
+router.post("/follow", basicMiddleware, UpdateFollow);
 router.get("/check", basicMiddleware, CheckFollowStatus);
 router.get("/list-followers", basicMiddleware, ListFollowers);
 router.get("/list-followings", basicMiddleware, ListFollowings);

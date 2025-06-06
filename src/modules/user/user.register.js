@@ -1,6 +1,6 @@
 const User = require("./user.model");
 const path = require("path");
-const fs = require("fs");
+const fs = require("fs"); 
 const GenRes = require("../../utils/routers/GenRes");
 
 const RegisterUser = async (req, res) => {

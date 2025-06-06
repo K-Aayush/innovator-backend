@@ -50,7 +50,7 @@ const loginUser = async (req, res) => {
 
       // Create user directory
       try {
-        const joinedPath = path.join(process.cwd(), "Uploads", email);
+        const joinedPath = path.join(process.cwd(), "uploads", email);
         fs.mkdirSync(joinedPath, { recursive: true });
       } catch (err) {
         console.error("Error creating user directory:", err);

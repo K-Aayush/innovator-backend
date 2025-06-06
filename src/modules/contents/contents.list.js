@@ -1,20 +1,19 @@
-const GenRes = require("../../utils/routers/GenRes");
+const Content = require("./contents.model");
+const User = require("../user/user.model");
 const Follow = require("../follow/follow.model");
 const Likes = require("../likes/likes.model");
-const Comments = require("../comments/comments.model");
-const Content = require("../contents/contents.model");
-const User = require("../user/user.model");
+const Comment = require("../comments/comments.model");
+const GenRes = require("../../utils/routers/GenRes");
 const axios = require("axios");
-const { ObjectId } = require("mongoose").Types;
+const { ObjectId } = require("mongoose");
+const NodeCache = require("node-cache");
 
-// Time decay calculation
-const getTimeDecayScore = (createdAt) => {
-  const hoursOld =
-    (Date.now() - new Date(createdAt).getTime()) / (1000 * 60 * 60);
-  return 1 / (1 + Math.sqrt(Math.max(hoursOld, 0.1)));
-};
+// Initialize cache with 5 minutes TTL
+const contentCache = new NodeCache({ stdTTL: 300 });
+const userDataCache = new NodeCache({ stdTTL: 300 });
+const engagementCache = new NodeCache({ stdTTL: 300 });
 
-// Fisher-Yates shuffle
+// Helper function to shuffle array
 const shuffleArray = (array) => {
   for (let i = array.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -23,7 +22,14 @@ const shuffleArray = (array) => {
   return array;
 };
 
-// Quality score
+// Time decay score calculation
+const getTimeDecayScore = (createdAt) => {
+  const hoursOld =
+    (Date.now() - new Date(createdAt).getTime()) / (1000 * 60 * 60);
+  return 1 / (1 + Math.sqrt(Math.max(hoursOld, 0.1)));
+};
+
+// Quality score calculation
 const calculateQualityScore = async (content) => {
   let score = content.files?.length ? 1.2 : 1;
   const author = await User.findOne({ email: content.author.email }).lean();
@@ -31,8 +37,15 @@ const calculateQualityScore = async (content) => {
   return score;
 };
 
-// Fetch user data
+// Fetch user data with caching
 const getUserData = async (user) => {
+  const cacheKey = `user_data_${user._id}`;
+  const cachedData = userDataCache.get(cacheKey);
+
+  if (cachedData) {
+    return cachedData;
+  }
+
   const userDetails = await User.findById(user._id).lean();
   const followings = await Follow.find({ "follower.email": user.email });
   const followingEmails = followings.map((f) => f.following.email);
@@ -45,13 +58,20 @@ const getUserData = async (user) => {
     .distinct("_id")
     .then((ids) => ids.map((id) => id.toString()));
 
-  console.log("Fetched viewedContent IDs:", viewedContent);
-
-  return { userDetails, followingEmails, recentLikes, viewedContent };
+  const data = { userDetails, followingEmails, recentLikes, viewedContent };
+  userDataCache.set(cacheKey, data);
+  return data;
 };
 
-// Fetch engagement metrics
+// Fetch engagement metrics with caching
 const getEngagementScores = async () => {
+  const cacheKey = "engagement_scores";
+  const cachedScores = engagementCache.get(cacheKey);
+
+  if (cachedScores) {
+    return cachedScores;
+  }
+
   const metrics = await Content.aggregate([
     {
       $lookup: {
@@ -86,10 +106,14 @@ const getEngagementScores = async () => {
     },
   ]);
 
-  return new Map(metrics.map((item) => [item._id.toString(), { ...item }]));
+  const scores = new Map(
+    metrics.map((item) => [item._id.toString(), { ...item }])
+  );
+  engagementCache.set(cacheKey, scores);
+  return scores;
 };
 
-// Fetch and score content
+// Fetch and score content with caching
 const fetchAndScoreContent = async (
   filters,
   emails,
@@ -101,6 +125,15 @@ const fetchAndScoreContent = async (
   pageSize,
   isRefresh
 ) => {
+  const cacheKey = `content_${userEmail}_${JSON.stringify(
+    filters
+  )}_${pageSize}_${isRefresh}`;
+  const cachedContent = contentCache.get(cacheKey);
+
+  if (cachedContent && !isRefresh) {
+    return cachedContent;
+  }
+
   const fetchSize = pageSize * 4;
 
   const query = {
@@ -120,9 +153,7 @@ const fetchAndScoreContent = async (
     .limit(fetchSize)
     .lean();
 
-  console.log("Unseen contents length:", contents.length);
-
-  // Fetch viewed content
+  // Fetch viewed content if needed
   let viewedContents = [];
   if (contents.length < pageSize || isRefresh) {
     viewedContents = await Content.find({
@@ -132,7 +163,6 @@ const fetchAndScoreContent = async (
       .sort({ _id: -1 })
       .limit(fetchSize - contents.length)
       .lean();
-    console.log("Viewed contents length:", viewedContents.length);
   }
 
   // Deduplicate
@@ -144,18 +174,12 @@ const fetchAndScoreContent = async (
     return true;
   });
 
-  console.log("Total unique contents fetched:", contents.length);
-
   // Shuffle if all viewed
   if (
     contents.length > 0 &&
     contents.every((c) => viewedContent.includes(c._id.toString()))
   ) {
     contents = shuffleArray(contents);
-    console.log(
-      "Shuffled viewed contents:",
-      contents.map((c) => c._id)
-    );
   }
 
   const scored = await Promise.all(
@@ -206,7 +230,7 @@ const fetchAndScoreContent = async (
         const random = 1 + Math.random() * 0.15;
 
         score =
-          (metrics.engagementScore + 1) * // Avoid zero
+          (metrics.engagementScore + 1) *
           getTimeDecayScore(c.createdAt) *
           qualityScore *
           interestMatch *
@@ -218,48 +242,46 @@ const fetchAndScoreContent = async (
           lessViewedBoost *
           random;
       }
-      console.log(
-        `Scored content _id: ${c._id}, score: ${score}, is_viewed: ${features.is_viewed}`
-      );
-      return { ...c, score: score || Math.random() }; // Fallback to random
+
+      return { ...c, score: score || Math.random() };
     })
   );
 
   // Sort by score unless all viewed
   if (!scored.every((c) => viewedContent.includes(c._id.toString()))) {
     scored.sort((a, b) => b.score - a.score);
-  } else {
-    // Ensure randomization persists
-    console.log(
-      "All viewed, preserving shuffle:",
-      scored.map((c) => c._id)
-    );
   }
 
+  contentCache.set(cacheKey, scored);
   return scored;
 };
 
-// Enrich content
-const enrichContent = async (items, userEmail) => {
+// Enrich content with additional data
+const enrichContent = async (contents, userEmail) => {
   return Promise.all(
-    items.map(async (item) => {
-      const base = { uid: item._id, type: "content" };
-      const [likes, comments, liked, followed] = await Promise.all([
-        Likes.countDocuments(base),
-        Comments.countDocuments(base),
-        Likes.findOne({ ...base, "user.email": userEmail }),
-        Follow.findOne({
-          "follower.email": userEmail,
-          "following.email": item.author.email,
-        }),
+    contents.map(async (content) => {
+      const [likes, comments] = await Promise.all([
+        Likes.countDocuments({ uid: content._id, type: "content" }),
+        Comment.countDocuments({ uid: content._id, type: "content" }),
       ]);
 
-      const { score, ...rest } = item;
-      return { ...rest, likes, comments, liked: !!liked, followed: !!followed };
+      const liked = await Likes.findOne({
+        uid: content._id,
+        type: "content",
+        "user.email": userEmail,
+      });
+
+      return {
+        ...content,
+        likes,
+        comments,
+        liked: !!liked,
+      };
     })
   );
 };
 
+// Main content listing function
 const ListContents = async (req, res) => {
   try {
     const { email, name, search, lastId, pageSize = 10 } = req.query;
@@ -283,9 +305,6 @@ const ListContents = async (req, res) => {
       await getUserData(user);
     const engagementScores = await getEngagementScores();
 
-    console.log("Viewed content IDs:", viewedContent);
-    console.log("User email:", user.email);
-
     const scoredContent = await fetchAndScoreContent(
       filters,
       followingEmails,
@@ -299,7 +318,6 @@ const ListContents = async (req, res) => {
     );
 
     if (scoredContent.length === 0) {
-      console.log("No content available after scoring");
       return res.status(200).json(
         GenRes(
           200,
@@ -319,19 +337,6 @@ const ListContents = async (req, res) => {
       user.email
     );
     const hasMore = scoredContent.length > pageSizeNum;
-
-    console.log(
-      "Final content IDs:",
-      finalContent.map((c) => c._id)
-    );
-    console.log(
-      "Scored content:",
-      scoredContent.map((c) => ({
-        _id: c._id,
-        score: c.score,
-        is_viewed: viewedContent.includes(c._id.toString()),
-      }))
-    );
 
     return res.status(200).json(
       GenRes(

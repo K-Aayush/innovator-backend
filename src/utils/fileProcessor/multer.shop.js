@@ -40,7 +40,7 @@ const storage = multer.diskStorage({
 
     console.log(
       "Saving product file to:",
-      path.join(process.cwd(), "Uploads", req.vendor.email, "shop", safeName)
+      path.join(process.cwd(), "uploads", req.vendor.email, "shop", safeName)
     );
     console.log("Stored product file path:", fileLocation);
     console.log("Current file_locations:", req.file_locations);

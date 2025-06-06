@@ -3,7 +3,7 @@ const GenRes = require("../../utils/routers/GenRes");
 
 const IncrementView = async (req, res) => {
   try {
-    const { contentId } = req.params;
+    const { id: contentId } = req.params;
     const userEmail = req.user.email;
 
     const content = await Content.findById(contentId);

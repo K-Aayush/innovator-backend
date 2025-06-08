@@ -16,7 +16,16 @@ const NotificationSchema = new Schema(
       picture: String,
     },
     type: gen.required(String, {
-      enum: ["message", "content", "shop", "course", "like", "comment"],
+      enum: [
+        "message",
+        "content",
+        "shop",
+        "course",
+        "like",
+        "comment",
+        "video",
+        "reel",
+      ],
     }),
     content: gen.required(String),
     read: gen.required(Boolean, { default: false }),

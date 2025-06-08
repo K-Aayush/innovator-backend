@@ -3,7 +3,7 @@ const GenRes = require("../../utils/routers/GenRes");
 const Like = require("./likes.model");
 const User = require("../user/user.model");
 const Content = require("../contents/contents.model");
-const Video = require("../videos/video.model");
+const Video = require("../../modules/video/video.model");
 const Notification = require("../notifications/notification.model");
 
 const LikeHandler = async (req, res) => {

@@ -1,6 +1,6 @@
 const router = require("express").Router();
 const basicMiddleware = require("../../middlewares/basicMiddleware");
-const VideoFiles = require("../../utils/fileProcessor/multer.videos");
+const VideoFiles = require("../../utils/fileProcessor/multer.video");
 const {
   AddVideo,
   UpdateVideo,

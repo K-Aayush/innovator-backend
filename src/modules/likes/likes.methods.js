@@ -3,6 +3,7 @@ const GenRes = require("../../utils/routers/GenRes");
 const Like = require("./likes.model");
 const User = require("../user/user.model");
 const Content = require("../contents/contents.model");
+const Video = require("../videos/video.model");
 const Notification = require("../notifications/notification.model");
 
 const LikeHandler = async (req, res) => {
@@ -35,30 +36,45 @@ const LikeHandler = async (req, res) => {
         !uid ||
         !isValidObjectId(uid) ||
         !type ||
-        (type !== "content" && type !== "course")
+        !["content", "course", "video", "reel"].includes(type)
       ) {
         const response = GenRes(
           400,
           null,
           { error: "INVALID DATA TYPE" },
-          "Invalid data. 'type' must be 'content' or 'course', and valid 'uid' required!"
+          "Invalid data. 'type' must be 'content', 'course', 'video', or 'reel', and valid 'uid' required!"
         );
         return res.status(400).json(response);
       }
 
-      const contentExist = await Content.findById(uid);
-      if (!contentExist) {
-        throw new Error("This content no longer exists!");
+      let itemExists;
+      let itemType = type;
+
+      // Check if the item exists based on type
+      if (type === "content") {
+        itemExists = await Content.findById(uid);
+      } else if (type === "course") {
+        // Assuming you have a Course model
+        itemExists = await Content.findById(uid); // Replace with Course model when available
+      } else if (type === "video" || type === "reel") {
+        itemExists = await Video.findById(uid);
+        // For videos and reels, we'll store the like type as "video" in the database
+        itemType = "video";
+      }
+
+      if (!itemExists) {
+        throw new Error(`This ${type} no longer exists!`);
       }
 
       const deleted = await Like.findOneAndDelete({
         uid,
         "user.email": userEmail,
+        type: itemType,
       });
 
       if (!deleted) {
         const newLike = new Like({
-          type,
+          type: itemType,
           uid,
           user: getUser.toObject(),
         });
@@ -67,8 +83,8 @@ const LikeHandler = async (req, res) => {
         // Create notification object
         const notification = new Notification({
           recipient: {
-            _id: contentExist.author._id,
-            email: contentExist.author.email,
+            _id: itemExists.author._id,
+            email: itemExists.author.email,
           },
           sender: {
             _id: getUser._id,
@@ -82,7 +98,7 @@ const LikeHandler = async (req, res) => {
           metadata: {
             itemId: uid,
             itemType: type,
-            contentTitle: contentExist.title || "content",
+            contentTitle: itemExists.title || itemExists.status || "content",
           },
         });
 

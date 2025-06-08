@@ -3,6 +3,7 @@ const GenRes = require("../../utils/routers/GenRes");
 const User = require("../user/user.model");
 const Comment = require("./comments.model");
 const Content = require("../contents/contents.model");
+const Video = require("../videos/video.model");
 const Notification = require("../notifications/notification.model");
 const { CleanUpAfterDeleteComment } = require("./comments.cleanup");
 
@@ -15,7 +16,7 @@ const AddComment = async (req, res) => {
 
     const noData = !uid || !type || !comment;
     const falseID = !isValidObjectId(uid);
-    const inValidType = type !== "content" && type !== "course";
+    const inValidType = !["content", "course", "video", "reel"].includes(type);
     const invalidContent = noData || falseID || inValidType;
 
     if (invalidContent) {
@@ -25,7 +26,7 @@ const AddComment = async (req, res) => {
           requiredReqFormat: {
             params: "valid content's _id",
             body: {
-              type: "either content or course",
+              type: "content, course, video, or reel",
               comment: "String longer than 0",
             },
           },
@@ -48,13 +49,26 @@ const AddComment = async (req, res) => {
       return res.status(401).json(response);
     }
 
-    const content = await Content.findById(uid);
-    if (!content) {
-      throw new Error("Content not found!");
+    let item;
+    let commentType = type;
+
+    // Find the item based on type
+    if (type === "content") {
+      item = await Content.findById(uid);
+    } else if (type === "course") {
+      item = await Content.findById(uid); // Replace with Course model when available
+    } else if (type === "video" || type === "reel") {
+      item = await Video.findById(uid);
+      // For videos and reels, we'll store the comment type as "video" in the database
+      commentType = "video";
+    }
+
+    if (!item) {
+      throw new Error(`${type} not found!`);
     }
 
     const newData = new Comment({
-      type,
+      type: commentType,
       uid,
       comment,
       user: user?.toObject(),
@@ -66,8 +80,8 @@ const AddComment = async (req, res) => {
     // Create notification for content author
     const notification = new Notification({
       recipient: {
-        _id: content.author._id,
-        email: content.author.email,
+        _id: item.author._id,
+        email: item.author.email,
       },
       sender: {
         _id: user._id,
@@ -89,10 +103,10 @@ const AddComment = async (req, res) => {
     // Emit notification to online user
     const io = req.app.get("io");
     if (io) {
-      io.to(content.author._id).emit("new_notification", notification);
+      io.to(item.author._id).emit("new_notification", notification);
     }
 
-    const response = GenRes(200, newData, null, "Uploaded Successfully!");
+    const response = GenRes(200, newData, null, "Comment added successfully!");
     return res.status(200).json(response);
   } catch (error) {
     const response = GenRes(
@@ -204,12 +218,18 @@ const GetComments = async (req, res) => {
         400,
         null,
         { error: "Invalid Content ID" },
-        "Invlaid ID! "
+        "Invalid ID! "
       );
       return res.status(400).json(response);
     }
 
-    const comments = await Comment.find({ uid, type })
+    // Map frontend types to database types
+    let dbType = type;
+    if (type === "reel") {
+      dbType = "video";
+    }
+
+    const comments = await Comment.find({ uid, type: dbType })
       .skip(page * 20)
       .limit(20)
       .lean();

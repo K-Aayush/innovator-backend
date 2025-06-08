@@ -149,7 +149,7 @@ const UpdateVideo = async (req, res) => {
 
     delete data?._id;
     delete data?.author;
-    delete data?.videoUrl; // Prevent changing video URL
+    delete data?.videoUrl; 
 
     const updated = await Video.findOneAndUpdate(
       { _id, "author.email": userEmail },

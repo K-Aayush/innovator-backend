@@ -10,7 +10,8 @@ const AddVideo = async (req, res) => {
   try {
     const data = req?.body;
     const user = req?.user;
-    const videoFile = req?.file_location;
+    const videoFile = req?.file_locations?.video;
+    const thumbnailFile = req?.file_locations?.thumbnail;
 
     if (!videoFile) {
       return res
@@ -70,7 +71,7 @@ const AddVideo = async (req, res) => {
       title: data.title,
       description: data.description,
       videoUrl: videoFile,
-      thumbnail: data.thumbnail || "",
+      thumbnail: thumbnailFile || "",
       duration,
       type: videoType,
       tags: Array.isArray(data.tags) ? data.tags : [],

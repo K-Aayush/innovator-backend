@@ -1,6 +1,6 @@
 const router = require("express").Router();
 const basicMiddleware = require("../../middlewares/basicMiddleware");
-const VideoFiles = require("../../utils/fileProcessor/multer.video");
+const uploadVideoAndThumbnail = require("../../utils/fileProcessor/multer.video");
 const {
   AddVideo,
   UpdateVideo,
@@ -19,7 +19,10 @@ const { ShareVideo, GetVideoShares } = require("./video.share");
 router.post(
   "/upload-video",
   basicMiddleware,
-  VideoFiles.single("video"),
+  uploadVideoAndThumbnail.fields([
+    { name: "video", maxCount: 1 },
+    { name: "thumbnail", maxCount: 1 },
+  ]),
   AddVideo
 );
 

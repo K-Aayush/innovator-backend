@@ -5,7 +5,7 @@ const gen = new ModelGenerator();
 
 const CommentSchema = new Schema(
   {
-    type: gen.required(String, { enum: ["content", "course"] }),
+    type: gen.required(String, { enum: ["content", "course", "video"] }),
     uid: gen.required(String),
     user: gen.required({
       _id: gen.required(String),

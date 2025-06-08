@@ -22,6 +22,18 @@ const shuffleArray = (array) => {
   return array;
 };
 
+// Helper function to check if a file is a video based on extension
+const isVideoFile = (file) => {
+  const videoExtensions = [".mp4", ".mov", ".webm", ".avi", ".mkv"];
+  return videoExtensions.some((ext) => file.toLowerCase().endsWith(ext));
+};
+
+// Helper function to check if a file is an image based on extension
+const isImageFile = (file) => {
+  const imageExtensions = [".jpg", ".jpeg", ".png", ".gif", ".bmp"];
+  return imageExtensions.some((ext) => file.toLowerCase().endsWith(ext));
+};
+
 // Time decay score calculation
 const getTimeDecayScore = (createdAt) => {
   const hoursOld =
@@ -266,13 +278,25 @@ const fetchAndScoreContent = async (
     })
   );
 
+  // Categorize content into videos and normal posts
+  const videoContents = scored.filter((c) =>
+    c.files?.some((file) => isVideoFile(file))
+  );
+  const normalContents = scored.filter(
+    (c) =>
+      !c.files?.some((file) => isVideoFile(file)) &&
+      (c.files?.some((file) => isImageFile(file)) || !c.files?.length)
+  );
+
   // Sort by score unless all viewed
-  if (!scored.every((c) => viewedContent.includes(c._id.toString()))) {
-    scored.sort((a, b) => b.score - a.score);
+  if (!videoContents.every((c) => viewedContent.includes(c._id.toString()))) {
+    videoContents.sort((a, b) => b.score - a.score);
+    normalContents.sort((a, b) => b.score - a.score);
   }
 
-  contentCache.set(cacheKey, scored);
-  return scored;
+  const result = { videoContents, normalContents };
+  contentCache.set(cacheKey, result);
+  return result;
 };
 
 // Enrich content with additional data
@@ -324,7 +348,7 @@ const ListContents = async (req, res) => {
       await getUserData(user);
     const engagementScores = await getEngagementScores();
 
-    const scoredContent = await fetchAndScoreContent(
+    const { videoContents, normalContents } = await fetchAndScoreContent(
       filters,
       followingEmails,
       viewedContent,
@@ -336,39 +360,33 @@ const ListContents = async (req, res) => {
       isRefresh
     );
 
-    if (scoredContent.length === 0) {
-      return res.status(200).json(
-        GenRes(
-          200,
-          {
-            contents: [],
-            hasMore: false,
-            nextCursor: null,
-          },
-          null,
-          "No content available"
-        )
-      );
-    }
+    // Enrich both content arrays
+    const [finalVideos, finalNormal] = await Promise.all([
+      enrichContent(videoContents.slice(0, pageSizeNum), user.email),
+      enrichContent(normalContents.slice(0, pageSizeNum), user.email),
+    ]);
 
-    const finalContent = await enrichContent(
-      scoredContent.slice(0, pageSizeNum),
-      user.email
-    );
-    const hasMore = scoredContent.length > pageSizeNum;
+    // hasMore flags for both categories
+    const hasMoreVideos = videoContents.length > pageSizeNum;
+    const hasMoreNormal = normalContents.length > pageSizeNum;
 
     return res.status(200).json(
       GenRes(
         200,
         {
-          contents: finalContent,
-          hasMore,
-          nextCursor: hasMore
-            ? finalContent[finalContent.length - 1]?._id || null
+          videoContents: finalVideos,
+          normalContents: finalNormal,
+          hasMoreVideos,
+          hasMoreNormal,
+          nextVideoCursor: hasMoreVideos
+            ? finalVideos[finalVideos.length - 1]?._id || null
+            : null,
+          nextNormalCursor: hasMoreNormal
+            ? finalNormal[finalNormal.length - 1]?._id || null
             : null,
         },
         null,
-        `Retrieved ${finalContent.length} content items`
+        `Retrieved ${finalVideos.length} video items and ${finalNormal.length} normal items`
       )
     );
   } catch (err) {

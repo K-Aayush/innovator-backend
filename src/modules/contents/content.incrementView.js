@@ -4,7 +4,7 @@ const GenRes = require("../../utils/routers/GenRes");
 const NodeCache = require("node-cache");
 
 // Initialize cache for view updates (shared with other parts of your app)
-const viewUpdateCache = new NodeCache({ stdTTL: 3600 }); // 1-hour TTL for offline updates
+const viewUpdateCache = new NodeCache({ stdTTL: 3600 });
 
 // Function to check MongoDB connection status
 const isMongoConnected = () => {

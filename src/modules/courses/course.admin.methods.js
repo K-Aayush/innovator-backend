@@ -11,7 +11,7 @@ const AddCourse = async (req, res) => {
 
     data.author = {
       email: author?.email,
-      phone: author?.email,
+      phone: author?.phone,
       _id: author?._id,
     };
 

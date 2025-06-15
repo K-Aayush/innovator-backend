@@ -82,8 +82,16 @@ const basicMiddleware = async (req, res, next) => {
       email: user.email,
       phone: user.phone,
       role: user.role,
-      uid: user.uid || null, 
+      uid: user.uid || null,
     };
+
+    if (user.role === "admin") {
+      req.admin = {
+        _id: user._id,
+        email: user.email,
+        phone: user.phone,
+      };
+    }
 
     return next();
   } catch (error) {

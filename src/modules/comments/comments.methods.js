@@ -5,6 +5,7 @@ const Comment = require("./comments.model");
 const Content = require("../contents/contents.model");
 const Video = require("../../modules/video/video.model");
 const Notification = require("../notifications/notification.model");
+const Course = require("../courses/courses.model")
 const { CleanUpAfterDeleteComment } = require("./comments.cleanup");
 
 // Add Comment
@@ -56,7 +57,7 @@ const AddComment = async (req, res) => {
     if (type === "content") {
       item = await Content.findById(uid);
     } else if (type === "course") {
-      item = await Content.findById(uid); // Replace with Course model when available
+      item = await Course.findById(uid); 
     } else if (type === "video" || type === "reel") {
       item = await Video.findById(uid);
       // For videos and reels, we'll store the comment type as "video" in the database

@@ -21,8 +21,6 @@ const AddCourse = async (req, res) => {
     const data = req?.body;
 
     data.author = {
-      email: req.user.email,
-      phone: req.user.phone,
       _id: req.user._id,
     };
 

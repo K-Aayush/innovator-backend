@@ -5,6 +5,7 @@ const User = require("../user/user.model");
 const Content = require("../contents/contents.model");
 const Video = require("../../modules/video/video.model");
 const Notification = require("../notifications/notification.model");
+const Course = require("../courses/courses.model")
 
 const LikeHandler = async (req, res) => {
   try {
@@ -55,7 +56,7 @@ const LikeHandler = async (req, res) => {
         itemExists = await Content.findById(uid);
       } else if (type === "course") {
         // Assuming you have a Course model
-        itemExists = await Content.findById(uid); // Replace with Course model when available
+        itemExists = await Course.findById(uid); 
       } else if (type === "video" || type === "reel") {
         itemExists = await Video.findById(uid);
         // For videos and reels, we'll store the like type as "video" in the database
@@ -111,7 +112,6 @@ const LikeHandler = async (req, res) => {
     // Handle real-time notifications after all operations are complete
     const io = req.app.get("io");
     if (io && notifications.length > 0) {
-      // Group notifications by recipient
       const notificationsByRecipient = notifications.reduce(
         (acc, notification) => {
           const recipientId = notification.recipient._id;

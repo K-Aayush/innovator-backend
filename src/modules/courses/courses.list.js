@@ -28,6 +28,7 @@ const ListCourses = async (req, res) => {
     const courses = await Courses.find(filters)
       .sort({ _id: -1 })
       .limit(limit + 1)
+      .populate("author", "email phone")
       .lean();
 
     // Check if there are more items

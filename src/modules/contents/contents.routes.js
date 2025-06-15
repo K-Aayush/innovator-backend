@@ -1,8 +1,8 @@
 const basicMiddleware = require("../../middlewares/basicMiddleware");
 const UserFiles = require("../../utils/fileProcessor/multer.users.js");
 const { MultipleFiles, SingleFile, DeleteFiles } = require("./contents.files");
-const ListContents = require("./contents.list.js");
-const IncrementView = require("./content.incrementView.js");
+const { ListContents, LoadEngagementData } = require("./contents.list.js");
+const { IncrementView, GetViewCount } = require("./content.incrementView.js");
 const {
   AddContent,
   UpdateContents,
@@ -29,12 +29,16 @@ router.post("/update-contents/:id", basicMiddleware, UpdateContents);
 
 //update increment
 router.post("/content/:id/view", basicMiddleware, IncrementView);
+router.post("/content/:id/view", basicMiddleware, GetViewCount);
 
 // delete whole contents
 router.delete("/delete-content/:id", basicMiddleware, DeleteContent);
 
-// get data
+// get data - optimized
 router.get("/list-contents", basicMiddleware, ListContents);
+
+// load engagement data on demand
+router.post("/load-engagement", basicMiddleware, LoadEngagementData);
 
 // admin
 router.get("/list-admin-contents/:page", basicMiddleware, ListContents);

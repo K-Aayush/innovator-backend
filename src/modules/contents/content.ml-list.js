@@ -136,7 +136,7 @@ const GetContentFeed = async (req, res) => {
 
     const user = req.user;
     const pageNum = parseInt(page, 10) || 0;
-    const limitNum = Math.min(parseInt(limit, 10) || 30, 40); // Max 40 content items
+    const limitNum = Math.min(parseInt(limit, 10) || 30, 40); 
 
     if (lastContentId && !isValidObjectId(lastContentId)) {
       return res

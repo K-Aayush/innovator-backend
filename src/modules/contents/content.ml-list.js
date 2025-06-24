@@ -2,24 +2,22 @@ const MLFeedService = require("../../services/mlFeedService");
 const GenRes = require("../../utils/routers/GenRes");
 const { isValidObjectId } = require("mongoose");
 
-// Get personalized ML-powered feed
+// Get personalized ML-powered feed (content only - including videos)
 const GetPersonalizedFeed = async (req, res) => {
   try {
     const {
       page = 0,
       limit = 50,
       lastContentId,
-      lastVideoId,
       quality = "medium",
-      includeVideos = "true",
-      contentOnly = "false",
+      contentType = "all", // 'all', 'text', 'video', 'image'
     } = req.query;
 
     const user = req.user;
     const pageNum = parseInt(page, 10) || 0;
     const limitNum = Math.min(parseInt(limit, 10) || 50, 50); // Max 50 items
 
-    // Validate cursor IDs if provided
+    // Validate cursor ID if provided
     if (lastContentId && !isValidObjectId(lastContentId)) {
       return res
         .status(400)
@@ -33,22 +31,12 @@ const GetPersonalizedFeed = async (req, res) => {
         );
     }
 
-    if (lastVideoId && !isValidObjectId(lastVideoId)) {
-      return res
-        .status(400)
-        .json(
-          GenRes(400, null, { error: "Invalid lastVideoId" }, "Invalid cursor")
-        );
-    }
-
     const options = {
       page: pageNum,
       limit: limitNum,
       lastContentId,
-      lastVideoId,
       quality,
-      includeVideos: includeVideos === "true",
-      contentOnly: contentOnly === "true",
+      contentType,
     };
 
     const result = await MLFeedService.generatePersonalizedFeed(
@@ -73,30 +61,39 @@ const GetPersonalizedFeed = async (req, res) => {
   }
 };
 
-// Get video-only feed
+// Get video-only feed (from content model)
 const GetVideoFeed = async (req, res) => {
   try {
-    const { page = 0, limit = 20, lastVideoId, quality = "medium" } = req.query;
+    const {
+      page = 0,
+      limit = 20,
+      lastContentId,
+      quality = "medium",
+    } = req.query;
 
     const user = req.user;
     const pageNum = parseInt(page, 10) || 0;
     const limitNum = Math.min(parseInt(limit, 10) || 20, 30); // Max 30 videos
 
-    if (lastVideoId && !isValidObjectId(lastVideoId)) {
+    if (lastContentId && !isValidObjectId(lastContentId)) {
       return res
         .status(400)
         .json(
-          GenRes(400, null, { error: "Invalid lastVideoId" }, "Invalid cursor")
+          GenRes(
+            400,
+            null,
+            { error: "Invalid lastContentId" },
+            "Invalid cursor"
+          )
         );
     }
 
     const options = {
       page: pageNum,
       limit: limitNum,
-      lastVideoId,
+      lastContentId,
       quality,
-      includeVideos: true,
-      contentOnly: false,
+      contentType: "video", // Only video content
     };
 
     const result = await MLFeedService.generatePersonalizedFeed(
@@ -109,13 +106,13 @@ const GetVideoFeed = async (req, res) => {
       GenRes(
         200,
         {
-          videos: result.data.videoContent,
-          hasMore: result.data.hasMoreVideos,
-          nextCursor: result.data.nextVideoCursor,
+          videos: result.data.feed,
+          hasMore: result.data.hasMore,
+          nextCursor: result.data.nextCursor,
           mlMetrics: result.data.mlMetrics,
         },
         null,
-        `Generated video feed with ${result.data.videoContent.length} videos`
+        `Generated video feed with ${result.data.feed.length} videos`
       )
     );
   } catch (error) {
@@ -136,7 +133,7 @@ const GetContentFeed = async (req, res) => {
 
     const user = req.user;
     const pageNum = parseInt(page, 10) || 0;
-    const limitNum = Math.min(parseInt(limit, 10) || 30, 40); 
+    const limitNum = Math.min(parseInt(limit, 10) || 30, 40);
 
     if (lastContentId && !isValidObjectId(lastContentId)) {
       return res
@@ -156,8 +153,7 @@ const GetContentFeed = async (req, res) => {
       limit: limitNum,
       lastContentId,
       quality,
-      includeVideos: false,
-      contentOnly: true,
+      contentType: "text", // Only text/image content (no videos)
     };
 
     const result = await MLFeedService.generatePersonalizedFeed(
@@ -170,13 +166,13 @@ const GetContentFeed = async (req, res) => {
       GenRes(
         200,
         {
-          content: result.data.regularContent,
-          hasMore: result.data.hasMoreContent,
-          nextCursor: result.data.nextContentCursor,
+          content: result.data.feed,
+          hasMore: result.data.hasMore,
+          nextCursor: result.data.nextCursor,
           mlMetrics: result.data.mlMetrics,
         },
         null,
-        `Generated content feed with ${result.data.regularContent.length} items`
+        `Generated content feed with ${result.data.feed.length} items`
       )
     );
   } catch (error) {
@@ -191,7 +187,7 @@ const GetTrendingFeed = async (req, res) => {
     const {
       timeframe = "24h",
       limit = 20,
-      type = "all", // 'all', 'content', 'video'
+      type = "all", // 'all', 'text', 'video'
     } = req.query;
 
     const user = req.user;
@@ -212,8 +208,9 @@ const GetTrendingFeed = async (req, res) => {
       page: 0,
       limit: limitNum * 2, // Fetch more for trending calculation
       quality: "high",
-      includeVideos: type !== "content",
-      contentOnly: type === "content",
+      contentType: type,
+      trending: true,
+      since,
     };
 
     const result = await MLFeedService.generatePersonalizedFeed(

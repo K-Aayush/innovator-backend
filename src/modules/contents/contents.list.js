@@ -13,7 +13,7 @@ const userDataCache = new NodeCache({ stdTTL: 180 }); // 3 minutes
 const engagementCache = new NodeCache({ stdTTL: 120 }); // 2 minutes
 const preloadCache = new NodeCache({ stdTTL: 30 }); // 30 seconds for preload
 
-// Helper function to shuffle array - NOW PROPERLY USED
+// Helper function to shuffle array
 const shuffleArray = (array) => {
   for (let i = array.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -138,13 +138,27 @@ const optimizeFileUrls = (files, quality = "auto") => {
   });
 };
 
+// Determine content type based on files
+const determineContentType = (files) => {
+  if (!files || !Array.isArray(files) || files.length === 0) {
+    return "text";
+  }
+
+  const hasVideo = files.some((file) => isVideoFile(file));
+  const hasImage = files.some((file) => isImageFile(file));
+
+  if (hasVideo) return "video";
+  if (hasImage) return "image";
+  return "text";
+};
+
 // Lightweight time decay score
 const getTimeDecayScore = (createdAt) => {
   const hoursOld = (Date.now() - new Date(createdAt).getTime()) / 3600000;
   return Math.max(0.1, 1 / (1 + hoursOld * 0.1));
 };
 
-// Quality score calculation - NOW USES User MODEL
+// Quality score calculation
 const calculateQualityScore = async (content, authorEmail) => {
   try {
     // Use User model to get author level
@@ -162,7 +176,7 @@ const calculateQualityScore = async (content, authorEmail) => {
   }
 };
 
-// Ultra-optimized user data fetching - NOW PROPERLY USES User MODEL
+// Ultra-optimized user data fetching
 const getUserData = async (user) => {
   const cacheKey = `user_data_v2_${user._id}`;
   const cachedData = userDataCache.get(cacheKey);
@@ -173,7 +187,7 @@ const getUserData = async (user) => {
 
   // Parallel queries including user details
   const [userDetails, followings, recentLikes] = await Promise.all([
-    User.findById(user._id).select("interests level").lean(), // NOW USING User MODEL
+    User.findById(user._id).select("interests level").lean(),
     Follow.find({ "follower.email": user.email })
       .select("following.email")
       .limit(100)
@@ -189,7 +203,7 @@ const getUserData = async (user) => {
   ]);
 
   const data = {
-    userDetails, // NOW INCLUDED
+    userDetails,
     followingEmails: followings.map((f) => f.following.email),
     recentLikes: recentLikes.map((l) => l.uid),
   };
@@ -244,7 +258,7 @@ const getEngagementScores = async () => {
   return scores;
 };
 
-// Ultra-optimized content fetching with PROPER SHUFFLING
+// Ultra-optimized content fetching with proper content type filtering
 const fetchAndScoreContent = async (
   filters,
   followingEmails,
@@ -252,15 +266,61 @@ const fetchAndScoreContent = async (
   userEmail,
   userInterests,
   pageSize,
-  quality = "auto"
+  quality = "auto",
+  contentType = "all"
 ) => {
   const cacheKey = `content_v3_${userEmail}_${JSON.stringify(
     filters
-  )}_${pageSize}_${quality}`;
+  )}_${pageSize}_${quality}_${contentType}`;
   const cachedContent = contentCache.get(cacheKey);
 
   if (cachedContent) {
     return cachedContent;
+  }
+
+  // Add content type filtering
+  let typeFilters = { ...filters };
+
+  if (contentType === "video") {
+    // Filter for content with video files
+    typeFilters.$expr = {
+      $gt: [
+        {
+          $size: {
+            $filter: {
+              input: { $ifNull: ["$files", []] },
+              cond: {
+                $regexMatch: {
+                  input: "$$this",
+                  regex: /\.(mp4|mov|webm|avi|mkv|m3u8)$/i,
+                },
+              },
+            },
+          },
+        },
+        0,
+      ],
+    };
+  } else if (contentType === "text") {
+    // Filter for content without video files (text/image only)
+    typeFilters.$expr = {
+      $eq: [
+        {
+          $size: {
+            $filter: {
+              input: { $ifNull: ["$files", []] },
+              cond: {
+                $regexMatch: {
+                  input: "$$this",
+                  regex: /\.(mp4|mov|webm|avi|mkv|m3u8)$/i,
+                },
+              },
+            },
+          },
+        },
+        0,
+      ],
+    };
   }
 
   // Minimal fetch size
@@ -268,12 +328,12 @@ const fetchAndScoreContent = async (
 
   // Prioritize followed users with separate queries
   const followedQuery = {
-    ...filters,
+    ...typeFilters,
     "author.email": { $in: followingEmails.slice(0, 50) }, // Limit following list
   };
 
   const discoverQuery = {
-    ...filters,
+    ...typeFilters,
     "author.email": { $nin: followingEmails.slice(0, 50) },
   };
 
@@ -324,7 +384,7 @@ const fetchAndScoreContent = async (
         : 1;
       const viewBoost = c.views > 100 ? 1.2 : 1;
 
-      // NOW PROPERLY USING calculateQualityScore with User model
+      // Quality score calculation
       const qualityScore = await calculateQualityScore(c, c.author.email);
 
       // Interest matching
@@ -353,25 +413,22 @@ const fetchAndScoreContent = async (
         files: optimizedFiles.map((f) => f.url), // Keep original structure
         optimizedFiles: optimizedFiles.slice(0, 3), // Limit to 3 files max
         loadPriority: score > 1.5 ? "high" : "normal",
+        contentType: determineContentType(c.files),
       };
     })
   );
 
-  // Quick categorization
-  const videoContents = scored.filter((c) =>
-    c.optimizedFiles?.some((f) => f.type === "video" || f.isVideoThumbnail)
-  );
-  const normalContents = scored.filter(
-    (c) =>
-      !c.optimizedFiles?.some((f) => f.type === "video" || f.isVideoThumbnail)
-  );
+  // Categorize by content type
+  const videoContents = scored.filter((c) => c.contentType === "video");
+  const imageContents = scored.filter((c) => c.contentType === "image");
+  const textContents = scored.filter((c) => c.contentType === "text");
 
   // Sort by score, then apply shuffling for variety
   videoContents.sort((a, b) => b.score - a.score);
-  normalContents.sort((a, b) => b.score - a.score);
+  imageContents.sort((a, b) => b.score - a.score);
+  textContents.sort((a, b) => b.score - a.score);
 
-  // NOW PROPERLY USING shuffleArray for better content variety
-  // Shuffle the lower-scored content to add variety
+  // Shuffle lower-scored content for variety
   const topVideoContent = videoContents.slice(
     0,
     Math.ceil(videoContents.length * 0.7)
@@ -380,21 +437,30 @@ const fetchAndScoreContent = async (
     videoContents.slice(Math.ceil(videoContents.length * 0.7))
   );
 
-  const topNormalContent = normalContents.slice(
+  const topImageContent = imageContents.slice(
     0,
-    Math.ceil(normalContents.length * 0.7)
+    Math.ceil(imageContents.length * 0.7)
   );
-  const shuffledNormalContent = shuffleArray(
-    normalContents.slice(Math.ceil(normalContents.length * 0.7))
+  const shuffledImageContent = shuffleArray(
+    imageContents.slice(Math.ceil(imageContents.length * 0.7))
+  );
+
+  const topTextContent = textContents.slice(
+    0,
+    Math.ceil(textContents.length * 0.7)
+  );
+  const shuffledTextContent = shuffleArray(
+    textContents.slice(Math.ceil(textContents.length * 0.7))
   );
 
   const result = {
     videoContents: [...topVideoContent, ...shuffledVideoContent],
-    normalContents: [...topNormalContent, ...shuffledNormalContent],
+    imageContents: [...topImageContent, ...shuffledImageContent],
+    textContents: [...topTextContent, ...shuffledTextContent],
+    allContents: scored.sort((a, b) => b.score - a.score),
   };
 
   contentCache.set(cacheKey, result);
-
   return result;
 };
 
@@ -422,6 +488,7 @@ const enrichContent = async (contents, userEmail) => {
     files: content.files,
     optimizedFiles: content.optimizedFiles,
     type: content.type,
+    contentType: content.contentType,
     author: {
       name: content.author.name,
       email: content.author.email,
@@ -452,6 +519,7 @@ const ListContents = async (req, res) => {
       pageSize = 8, // Reduced default page size
       quality = "auto",
       loadEngagement = "false", // Optional engagement loading
+      contentType = "all", // 'all', 'video', 'image', 'text'
     } = req.query;
 
     const user = req.user;
@@ -470,32 +538,43 @@ const ListContents = async (req, res) => {
     }
     if (lastId) filters._id = { $lt: lastId };
 
-    // Get user data including interests - NOW PROPERLY USING User MODEL
+    // Get user data including interests
     const { userDetails, followingEmails, recentLikes } = await getUserData(
       user
     );
 
     // Fetch and score content with user interests
-    const { videoContents, normalContents } = await fetchAndScoreContent(
-      filters,
-      followingEmails,
-      recentLikes,
-      user.email,
-      userDetails?.interests || [], // NOW USING USER INTERESTS
-      pageSizeNum,
-      quality
-    );
+    const { videoContents, imageContents, textContents, allContents } =
+      await fetchAndScoreContent(
+        filters,
+        followingEmails,
+        recentLikes,
+        user.email,
+        userDetails?.interests || [],
+        pageSizeNum,
+        quality,
+        contentType
+      );
+
+    // Select appropriate content based on contentType
+    let selectedContent = [];
+    if (contentType === "video") {
+      selectedContent = videoContents.slice(0, pageSizeNum);
+    } else if (contentType === "image") {
+      selectedContent = imageContents.slice(0, pageSizeNum);
+    } else if (contentType === "text") {
+      selectedContent = textContents.slice(0, pageSizeNum);
+    } else {
+      // Mix all content types
+      selectedContent = allContents.slice(0, pageSizeNum);
+    }
 
     // Enrich content with minimal data
-    const [finalVideos, finalNormal] = await Promise.all([
-      enrichContent(videoContents.slice(0, pageSizeNum), user.email),
-      enrichContent(normalContents.slice(0, pageSizeNum), user.email),
-    ]);
+    const finalContent = await enrichContent(selectedContent, user.email);
 
     // Optionally load engagement data
     if (shouldLoadEngagement) {
-      const allContent = [...finalVideos, ...finalNormal];
-      const contentIds = allContent.map((c) => c._id.toString());
+      const contentIds = finalContent.map((c) => c._id.toString());
 
       const [likesData, commentsData] = await Promise.all([
         Likes.aggregate([
@@ -514,27 +593,22 @@ const ListContents = async (req, res) => {
       );
 
       // Update engagement data
-      [...finalVideos, ...finalNormal].forEach((content) => {
+      finalContent.forEach((content) => {
         content.likes = likesMap.get(content._id.toString()) || 0;
         content.comments = commentsMap.get(content._id.toString()) || 0;
         content.engagementLoaded = true;
       });
     }
 
-    const hasMoreVideos = videoContents.length > pageSizeNum;
-    const hasMoreNormal = normalContents.length > pageSizeNum;
+    const hasMore = selectedContent.length >= pageSizeNum;
 
     const response = {
-      videoContents: finalVideos,
-      normalContents: finalNormal,
-      hasMoreVideos,
-      hasMoreNormal,
-      nextVideoCursor: hasMoreVideos
-        ? finalVideos[finalVideos.length - 1]?._id || null
+      content: finalContent,
+      hasMore,
+      nextCursor: hasMore
+        ? finalContent[finalContent.length - 1]?._id || null
         : null,
-      nextNormalCursor: hasMoreNormal
-        ? finalNormal[finalNormal.length - 1]?._id || null
-        : null,
+      contentType,
       optimizationInfo: {
         quality,
         hlsEnabled: true,
@@ -542,12 +616,15 @@ const ListContents = async (req, res) => {
         cacheHit: contentCache.has(
           `content_v3_${user.email}_${JSON.stringify(
             filters
-          )}_${pageSizeNum}_${quality}`
+          )}_${pageSizeNum}_${quality}_${contentType}`
         ),
         dataReduction: "~70%",
         streamingEnabled: true,
-        shufflingApplied: true, // NOW INDICATES SHUFFLING IS USED
+        shufflingApplied: true,
         userInterestsConsidered: userDetails?.interests?.length > 0,
+        totalVideoContent: videoContents.length,
+        totalImageContent: imageContents.length,
+        totalTextContent: textContents.length,
       },
     };
 
@@ -558,7 +635,7 @@ const ListContents = async (req, res) => {
           200,
           response,
           null,
-          `Retrieved ${finalVideos.length} video items and ${finalNormal.length} normal items (optimized with shuffling)`
+          `Retrieved ${finalContent.length} ${contentType} items (optimized with HLS support)`
         )
       );
   } catch (err) {

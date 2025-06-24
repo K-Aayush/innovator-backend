@@ -55,14 +55,14 @@ const storage = multer.diskStorage({
     // Process media files asynchronously after upload
     const fullFilePath = path.join(process.cwd(), filePath.substring(1));
 
-    // Schedule background processing
+    // Schedule background processing for content model files
     setImmediate(async () => {
       try {
         const isVideo = /\.(mp4|mov|avi|webm|mkv)$/i.test(ext);
         const isImage = /\.(jpg|jpeg|png|gif|bmp|webp)$/i.test(ext);
 
         if (isVideo) {
-          // Generate HLS playlist and thumbnail
+          // Generate HLS playlist and thumbnail for content model videos
           const hlsDir = path.join(
             path.dirname(fullFilePath),
             "hls",
@@ -74,14 +74,24 @@ const storage = multer.diskStorage({
             `${path.basename(safeName, ext)}_thumb.jpg`
           );
 
+          console.log(`Processing video for content model: ${fullFilePath}`);
+          console.log(`HLS output directory: ${hlsDir}`);
+          console.log(`Thumbnail output: ${thumbnailPath}`);
+
           await Promise.all([
             HLSProcessor.generateMultiQualityHLS(fullFilePath, hlsDir).catch(
-              console.error
+              (error) => {
+                console.error("HLS generation failed:", error);
+              }
             ),
             HLSProcessor.generateThumbnail(fullFilePath, thumbnailPath).catch(
-              console.error
+              (error) => {
+                console.error("Thumbnail generation failed:", error);
+              }
             ),
           ]);
+
+          console.log(`Video processing completed for: ${safeName}`);
         } else if (isImage) {
           // Generate compressed version and thumbnail
           const compressedPath = path.join(
@@ -97,12 +107,18 @@ const storage = multer.diskStorage({
 
           await Promise.all([
             HLSProcessor.compressImage(fullFilePath, compressedPath, 75).catch(
-              console.error
+              (error) => {
+                console.error("Image compression failed:", error);
+              }
             ),
             HLSProcessor.compressImage(fullFilePath, thumbnailPath, 60).catch(
-              console.error
+              (error) => {
+                console.error("Thumbnail generation failed:", error);
+              }
             ),
           ]);
+
+          console.log(`Image processing completed for: ${safeName}`);
         }
       } catch (error) {
         console.error("Background media processing error:", error);
@@ -116,11 +132,11 @@ const storage = multer.diskStorage({
 const UserFiles = multer({
   storage,
   limits: {
-    fileSize: 100 * 1024 * 1024, // Reduced to 100MB
+    fileSize: 100 * 1024 * 1024, // 100MB for content model files
     files: 5, // Limit number of files
   },
   fileFilter: (req, file, cb) => {
-    // Allow only specific file types
+    // Allow only specific file types for content model
     const allowedTypes = /jpeg|jpg|png|gif|webp|mp4|mov|avi|webm|mkv/;
     const extname = allowedTypes.test(
       path.extname(file.originalname).toLowerCase()
@@ -130,7 +146,7 @@ const UserFiles = multer({
     if (extname && mimetype) {
       return cb(null, true);
     }
-    cb(new Error("Only images and videos are allowed"), false);
+    cb(new Error("Only images and videos are allowed for content"), false);
   },
 });
 

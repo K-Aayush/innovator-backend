@@ -17,7 +17,7 @@ const {
   GetTrendingFeed,
   RefreshFeed,
   GetFeedAnalytics,
-} = require("./contents.ml-list");
+} = require("./content.ml-list.js");
 
 const router = require("express").Router();
 

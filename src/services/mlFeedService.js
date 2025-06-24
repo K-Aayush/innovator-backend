@@ -6,6 +6,10 @@ const Like = require("../modules/likes/likes.model");
 const Comment = require("../modules/comments/comments.model");
 const NodeCache = require("node-cache");
 
+// Import optimization components
+const ContentRanking = require("../utils/algorithms/contentRanking");
+const FeedOptimizer = require("../utils/performance/feedOptimizer");
+
 // Enhanced caching with different TTLs
 const feedCache = new NodeCache({ stdTTL: 300 }); // 5 minutes
 const userProfileCache = new NodeCache({ stdTTL: 600 }); // 10 minutes
@@ -27,12 +31,32 @@ class MLFeedService {
       share: 5,
       view: 0.1,
     };
+
+    // Performance monitoring
+    this.performanceMetrics = {
+      totalRequests: 0,
+      averageResponseTime: 0,
+      cacheHitRate: 0,
+      lastOptimization: new Date(),
+      mlCalculations: 0,
+      optimizationEvents: 0,
+    };
+
+    // Integration with optimization components
+    this.contentRanking = ContentRanking;
+    this.feedOptimizer = FeedOptimizer;
   }
 
-  // Get comprehensive user profile for ML
+  // Get comprehensive user profile for ML with optimization
   async getUserProfile(userId, userEmail) {
     const cacheKey = `user_profile_${userId}`;
-    const cached = userProfileCache.get(cacheKey);
+
+    // Try optimized cache first
+    let cached = this.feedOptimizer.getFromCache(cacheKey);
+    if (cached) return cached;
+
+    // Fallback to basic cache
+    cached = userProfileCache.get(cacheKey);
     if (cached) return cached;
 
     const [user, following, followers, recentLikes, recentComments] =
@@ -73,10 +97,90 @@ class MLFeedService {
       accountAge: user?.createdAt
         ? Date.now() - new Date(user.createdAt).getTime()
         : 0,
+      // Additional data for advanced ranking
+      previousInteractions: this.buildInteractionMap(
+        recentLikes,
+        recentComments
+      ),
+      preferredContentTypes: this.extractContentTypePreferences(
+        recentLikes,
+        recentComments
+      ),
+      activeHours: this.calculateActiveHours(recentLikes, recentComments),
+      recentlySeenAuthors: this.extractRecentAuthors(
+        recentLikes,
+        recentComments
+      ),
+      recentlySeenTypes: this.extractRecentTypes(recentLikes, recentComments),
     };
 
+    // Cache with optimization
+    await this.feedOptimizer.cacheContent(cacheKey, profile, {
+      popularity: "warm",
+      priority: "high",
+    });
     userProfileCache.set(cacheKey, profile);
+
     return profile;
+  }
+
+  // Build interaction map for advanced ranking
+  buildInteractionMap(likes, comments) {
+    const interactions = {};
+
+    [...likes, ...comments].forEach((activity) => {
+      // This would need to be enhanced to track author interactions
+      // For now, we'll use a simplified approach
+      interactions[activity.uid] = (interactions[activity.uid] || 0) + 1;
+    });
+
+    return interactions;
+  }
+
+  // Extract content type preferences
+  extractContentTypePreferences(likes, comments) {
+    const typeCount = {};
+
+    [...likes, ...comments].forEach((activity) => {
+      typeCount[activity.type] = (typeCount[activity.type] || 0) + 1;
+    });
+
+    return Object.entries(typeCount)
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 3)
+      .map(([type]) => type);
+  }
+
+  // Calculate active hours
+  calculateActiveHours(likes, comments) {
+    const hourlyActivity = new Array(24).fill(0);
+
+    [...likes, ...comments].forEach((activity) => {
+      const hour = new Date(activity.createdAt).getHours();
+      hourlyActivity[hour]++;
+    });
+
+    // Normalize to 0-1 scale
+    const maxActivity = Math.max(...hourlyActivity);
+    return hourlyActivity.map((count) =>
+      maxActivity > 0 ? count / maxActivity : 0
+    );
+  }
+
+  // Extract recent authors
+  extractRecentAuthors(likes, comments) {
+    // This would need enhancement to track actual authors
+    // For now, return empty array
+    return [];
+  }
+
+  // Extract recent content types
+  extractRecentTypes(likes, comments) {
+    const recentTypes = [...likes, ...comments]
+      .slice(0, 20) // Last 20 interactions
+      .map((activity) => activity.type);
+
+    return [...new Set(recentTypes)];
   }
 
   // Analyze user engagement patterns
@@ -101,10 +205,15 @@ class MLFeedService {
     };
   }
 
-  // Get engagement metrics for content
+  // Get engagement metrics for content with optimization
   async getEngagementMetrics(contentIds) {
     const cacheKey = `engagement_${contentIds.join("_")}`;
-    const cached = engagementCache.get(cacheKey);
+
+    // Try optimized cache first
+    let cached = this.feedOptimizer.getFromCache(cacheKey);
+    if (cached) return cached;
+
+    cached = engagementCache.get(cacheKey);
     if (cached) return cached;
 
     const [likes, comments, shares] = await Promise.all([
@@ -136,133 +245,69 @@ class MLFeedService {
       };
     });
 
+    // Cache with optimization
+    await this.feedOptimizer.cacheContent(cacheKey, metrics, {
+      popularity: "warm",
+    });
     engagementCache.set(cacheKey, metrics);
+
     return metrics;
   }
 
-  // Calculate ML-based content score
+  // Enhanced ML-based content scoring using ContentRanking
   async calculateContentScore(content, userProfile, engagementMetrics) {
     const contentId = content._id.toString();
     const cacheKey = `ml_score_${contentId}_${userProfile.user._id}`;
-    const cached = mlScoreCache.get(cacheKey);
+
+    // Try optimized cache first
+    let cached = this.feedOptimizer.getFromCache(cacheKey);
     if (cached) return cached;
 
-    // Recency Score (0-1)
-    const ageInHours =
-      (Date.now() - new Date(content.createdAt).getTime()) / (1000 * 60 * 60);
-    const recencyScore = Math.max(0, 1 - ageInHours / 168); // Decay over 1 week
+    cached = mlScoreCache.get(cacheKey);
+    if (cached) return cached;
 
-    // Engagement Score (0-1)
-    const metrics = engagementMetrics[contentId] || {
-      likes: 0,
-      comments: 0,
-      shares: 0,
-    };
-    const engagementScore = Math.min(
-      1,
-      (metrics.likes * this.engagementWeights.like +
-        metrics.comments * this.engagementWeights.comment +
-        metrics.shares * this.engagementWeights.share +
-        (content.views || 0) * this.engagementWeights.view) /
-        100
+    this.performanceMetrics.mlCalculations++;
+
+    // Use ContentRanking algorithm for sophisticated scoring
+    const rankingResult = this.contentRanking.calculateContentRank(
+      content,
+      userProfile,
+      engagementMetrics[contentId] || {}
     );
 
-    // Relationship Score (0-1)
-    const isFollowing = userProfile.followingEmails.includes(
-      content.author.email
-    );
-    const isMutualFollow = userProfile.followingIds.includes(
-      content.author._id
-    );
-    const relationshipScore = isFollowing ? (isMutualFollow ? 1 : 0.7) : 0.1;
+    const score = rankingResult.finalScore;
 
-    // User Preference Score (0-1)
-    const hasInteracted =
-      userProfile.recentLikes.includes(contentId) ||
-      userProfile.recentComments.includes(contentId);
-    const typePreference =
-      userProfile.engagementPattern.preferredTypes.includes(content.type)
-        ? 0.8
-        : 0.4;
-    const preferenceScore = hasInteracted ? 1 : typePreference;
-
-    // Content Quality Score
-    const qualityScore = this.calculateQualityScore(content);
-
-    // Final weighted score
-    const finalScore =
-      recencyScore * this.contentWeights.recency +
-      engagementScore * this.contentWeights.engagement +
-      relationshipScore * this.contentWeights.relationship +
-      preferenceScore * this.contentWeights.userPreference +
-      qualityScore * 0.1; // Bonus for quality
-
-    // Add randomness for diversity (Instagram-like)
-    const diversityBonus = Math.random() * 0.15;
-    const score = Math.min(1, finalScore + diversityBonus);
-
+    // Cache with optimization based on score
+    const popularity = score > 0.8 ? "hot" : score > 0.5 ? "warm" : "cold";
+    await this.feedOptimizer.cacheContent(cacheKey, score, {
+      popularity,
+      userEngagement: score,
+      contentAge: Date.now() - new Date(content.createdAt).getTime(),
+    });
     mlScoreCache.set(cacheKey, score);
+
     return score;
-  }
-
-  // Calculate content quality score
-  calculateQualityScore(content) {
-    let score = 0.5; // Base score
-
-    // Has media
-    if (content.files?.length > 0) score += 0.2;
-
-    // Has description
-    if (content.status?.length > 10) score += 0.1;
-
-    // Multiple media files
-    if (content.files?.length > 1) score += 0.1;
-
-    // Video content gets bonus
-    if (content.type === "video" || content.videoUrl) score += 0.1;
-
-    return Math.min(1, score);
   }
 
   // Optimize file URLs for performance
   optimizeContentFiles(content, quality = "medium") {
     if (!content.files?.length) return content;
 
+    // Use FeedOptimizer for advanced image optimization
     const optimizedFiles = content.files.map((file) => {
       const isVideo = /\.(mp4|mov|webm|avi|mkv)$/i.test(file);
       const isImage = /\.(jpg|jpeg|png|gif|webp)$/i.test(file);
 
       if (isVideo) {
-        const basePath = file.replace(/\.[^/.]+$/, "");
-        return {
-          url: `${basePath}/playlist.m3u8`,
-          thumbnail: `${basePath
-            .split("/")
-            .slice(0, -1)
-            .join("/")}/thumbnails/${basePath.split("/").pop()}_thumb.jpg`,
-          type: "video",
-          quality: quality,
-          streaming: true,
-        };
+        return this.feedOptimizer.generateVideoStreamingUrls(file, {
+          enableAdaptive: true,
+          enablePreview: quality !== "low",
+        });
       } else if (isImage) {
-        const basePath = file.replace(/\.[^/.]+$/, "");
-        const qualityMap = {
-          low: `${basePath
-            .split("/")
-            .slice(0, -1)
-            .join("/")}/thumbnails/${basePath.split("/").pop()}_thumb.jpg`,
-          medium: `${basePath
-            .split("/")
-            .slice(0, -1)
-            .join("/")}/compressed/${basePath.split("/").pop()}_compressed.jpg`,
-          high: file,
-        };
-        return {
-          url: qualityMap[quality] || qualityMap.medium,
-          thumbnail: qualityMap.low,
-          type: "image",
-          quality: quality,
-        };
+        return this.feedOptimizer.generateResponsiveImageUrls(file, {
+          formats: quality === "high" ? ["webp", "jpg"] : ["jpg"],
+          qualities: quality === "high" ? [60, 80, 95] : [60, 80],
+        });
       }
 
       return { url: file, type: "other" };
@@ -271,12 +316,15 @@ class MLFeedService {
     return {
       ...content,
       optimizedFiles,
-      files: optimizedFiles.map((f) => f.url), // Maintain compatibility
+      files: optimizedFiles.map((f) => f.url || f.hls || f.original), // Maintain compatibility
     };
   }
 
-  // Main feed generation method
+  // Main feed generation method with full optimization
   async generatePersonalizedFeed(userId, userEmail, options = {}) {
+    const startTime = Date.now();
+    this.performanceMetrics.totalRequests++;
+
     const {
       page = 0,
       limit = 50,
@@ -288,8 +336,14 @@ class MLFeedService {
     } = options;
 
     try {
-      // Get user profile
-      const userProfile = await getUserProfile(userId, userEmail);
+      // Preload critical content in background
+      const userProfile = await this.getUserProfile(userId, userEmail);
+
+      // Start preloading for next request
+      this.feedOptimizer.preloadCriticalContent(userId, userProfile, {
+        preloadCount: limit,
+        priority: "high",
+      });
 
       // Build base filters
       const baseFilters = {};
@@ -300,7 +354,7 @@ class MLFeedService {
       const videoFilters = { ...baseFilters };
       if (lastVideoId) videoFilters._id = { $lt: lastVideoId };
 
-      // Fetch content with ML-optimized strategy
+      // Fetch content with optimization
       const [regularContent, videoContent] = await Promise.all([
         this.fetchOptimizedContent(
           contentFilters,
@@ -325,31 +379,54 @@ class MLFeedService {
       ];
       const engagementMetrics = await this.getEngagementMetrics(allContentIds);
 
-      // Calculate ML scores and sort
+      // Calculate ML scores and sort using batch processing
       const [scoredContent, scoredVideos] = await Promise.all([
-        this.scoreAndSortContent(
+        this.feedOptimizer.batchProcessContent(
           regularContent,
-          userProfile,
-          engagementMetrics,
-          quality
+          async (content) =>
+            await this.scoreAndOptimizeContent(
+              content,
+              userProfile,
+              engagementMetrics,
+              quality
+            ),
+          { priority: "high" }
         ),
-        this.scoreAndSortContent(
+        this.feedOptimizer.batchProcessContent(
           videoContent,
-          userProfile,
-          engagementMetrics,
-          quality
+          async (content) =>
+            await this.scoreAndOptimizeContent(
+              content,
+              userProfile,
+              engagementMetrics,
+              quality
+            ),
+          { priority: "high" }
         ),
       ]);
 
-      // Apply Instagram-like mixing algorithm
-      const mixedFeed = this.createInstagramLikeFeed(
-        scoredContent,
-        scoredVideos,
-        contentOnly
+      // Use ContentRanking for sophisticated feed mixing
+      const mixedFeed = this.contentRanking.mixFeedContent(
+        scoredContent.sort((a, b) => b.mlScore - a.mlScore),
+        scoredVideos.sort((a, b) => b.mlScore - a.mlScore),
+        {
+          contentVideoRatio: 3,
+          maxConsecutiveVideos: 2,
+          maxConsecutiveContent: 4,
+          shuffleWithinGroups: true,
+        }
       );
 
       // Enrich with user interaction data
-      const enrichedFeed = await this.enrichWithUserData(mixedFeed, userEmail);
+      const enrichedFeed = await this.enrichWithUserData(
+        contentOnly ? scoredContent : mixedFeed,
+        userEmail
+      );
+
+      // Update performance metrics
+      const responseTime = Date.now() - startTime;
+      this.performanceMetrics.averageResponseTime =
+        (this.performanceMetrics.averageResponseTime + responseTime) / 2;
 
       return {
         success: true,
@@ -371,6 +448,8 @@ class MLFeedService {
             totalProcessed: allContentIds.length,
             cacheHitRate: this.calculateCacheHitRate(),
             diversityScore: this.calculateDiversityScore(enrichedFeed),
+            responseTime,
+            optimizationLevel: this.assessOptimizationLevel(),
           },
         },
       };
@@ -378,6 +457,27 @@ class MLFeedService {
       console.error("ML Feed Generation Error:", error);
       throw error;
     }
+  }
+
+  // Score and optimize content
+  async scoreAndOptimizeContent(
+    content,
+    userProfile,
+    engagementMetrics,
+    quality
+  ) {
+    const score = await this.calculateContentScore(
+      content,
+      userProfile,
+      engagementMetrics
+    );
+    const optimized = this.optimizeContentFiles(content, quality);
+
+    return {
+      ...optimized,
+      mlScore: score,
+      priority: this.calculatePriority(content, userProfile),
+    };
   }
 
   // Fetch optimized content based on ML strategy
@@ -431,32 +531,6 @@ class MLFeedService {
     });
   }
 
-  // Score and sort content using ML
-  async scoreAndSortContent(content, userProfile, engagementMetrics, quality) {
-    const scoredContent = await Promise.all(
-      content.map(async (item) => {
-        const score = await this.calculateContentScore(
-          item,
-          userProfile,
-          engagementMetrics
-        );
-        const optimized = this.optimizeContentFiles(item, quality);
-        return {
-          ...optimized,
-          mlScore: score,
-          priority: this.calculatePriority(item, userProfile),
-        };
-      })
-    );
-
-    // Sort by ML score with priority boost
-    return scoredContent.sort((a, b) => {
-      const scoreA = a.mlScore + a.priority;
-      const scoreB = b.mlScore + b.priority;
-      return scoreB - scoreA;
-    });
-  }
-
   // Calculate content priority (new posts get boost)
   calculatePriority(content, userProfile) {
     const ageInMinutes =
@@ -474,35 +548,6 @@ class MLFeedService {
     }
 
     return 0;
-  }
-
-  // Create Instagram-like mixed feed
-  createInstagramLikeFeed(regularContent, videoContent, contentOnly = false) {
-    if (contentOnly) return regularContent;
-
-    const mixed = [];
-    let contentIndex = 0;
-    let videoIndex = 0;
-
-    // Instagram-like pattern: 2-3 regular posts, then 1 video
-    while (
-      contentIndex < regularContent.length ||
-      videoIndex < videoContent.length
-    ) {
-      // Add 2-3 regular posts
-      for (let i = 0; i < 3 && contentIndex < regularContent.length; i++) {
-        mixed.push({ ...regularContent[contentIndex], feedType: "content" });
-        contentIndex++;
-      }
-
-      // Add 1 video
-      if (videoIndex < videoContent.length) {
-        mixed.push({ ...videoContent[videoIndex], feedType: "video" });
-        videoIndex++;
-      }
-    }
-
-    return mixed;
   }
 
   // Enrich content with user interaction data
@@ -539,8 +584,13 @@ class MLFeedService {
 
   // Calculate cache hit rate for monitoring
   calculateCacheHitRate() {
-    const stats = feedCache.getStats();
-    return stats.hits / (stats.hits + stats.misses) || 0;
+    const feedStats = feedCache.getStats();
+    const optimizerRate = this.feedOptimizer.calculateOverallHitRate();
+
+    const basicRate = feedStats.hits / (feedStats.hits + feedStats.misses) || 0;
+
+    // Combine both cache systems
+    return (basicRate + optimizerRate) / 2;
   }
 
   // Calculate diversity score
@@ -550,13 +600,95 @@ class MLFeedService {
     return (authors.size / feed.length) * (types.size / 5); // Normalize by max expected types
   }
 
+  // Assess optimization level
+  assessOptimizationLevel() {
+    const optimizerMetrics = this.feedOptimizer.getPerformanceMetrics();
+    const rankingMetrics = this.contentRanking.getPerformanceMetrics();
+
+    return {
+      cacheEfficiency: optimizerMetrics.cacheEfficiency,
+      systemHealth: optimizerMetrics.systemHealth.status,
+      rankingEfficiency: rankingMetrics.efficiency,
+      memoryOptimized: optimizerMetrics.memory.efficiency.hitRate > 0.7,
+      overallScore: this.calculateOverallOptimizationScore(
+        optimizerMetrics,
+        rankingMetrics
+      ),
+    };
+  }
+
+  // Calculate overall optimization score
+  calculateOverallOptimizationScore(optimizerMetrics, rankingMetrics) {
+    const cacheScore = optimizerMetrics.cacheEfficiency * 0.4;
+    const rankingScore = rankingMetrics.efficiency * 0.3;
+    const memoryScore =
+      (optimizerMetrics.memory.efficiency.hitRate > 0.7 ? 1 : 0.5) * 0.3;
+
+    return cacheScore + rankingScore + memoryScore;
+  }
+
+  // Get comprehensive performance metrics
+  getPerformanceMetrics() {
+    return {
+      mlService: this.performanceMetrics,
+      feedOptimizer: this.feedOptimizer.getPerformanceMetrics(),
+      contentRanking: this.contentRanking.getPerformanceMetrics(),
+      cacheStats: {
+        feed: feedCache.getStats(),
+        userProfile: userProfileCache.getStats(),
+        engagement: engagementCache.getStats(),
+        mlScore: mlScoreCache.getStats(),
+      },
+      memoryUsage: process.memoryUsage(),
+      systemHealth: this.feedOptimizer.assessSystemHealth(),
+    };
+  }
+
   // Clear caches (for testing/admin)
   clearCaches() {
     feedCache.flushAll();
     userProfileCache.flushAll();
     engagementCache.flushAll();
     mlScoreCache.flushAll();
+
+    // Also clear optimizer caches
+    this.feedOptimizer.optimizeMemoryUsage(true);
+  }
+
+  // Memory optimization with integrated approach
+  optimizeMemoryUsage() {
+    const usage = process.memoryUsage();
+    const heapUsedMB = usage.heapUsed / 1024 / 1024;
+
+    // Use FeedOptimizer for intelligent cleanup
+    const optimized = this.feedOptimizer.optimizeMemoryUsage();
+
+    // Additional ML-specific cleanup
+    if (heapUsedMB > 500) {
+      mlScoreCache.flushAll();
+      console.log("Cleared ML score cache due to high memory usage");
+    }
+
+    if (heapUsedMB > 750) {
+      engagementCache.flushAll();
+      console.log("Cleared engagement cache due to high memory usage");
+    }
+
+    if (optimized) {
+      this.performanceMetrics.optimizationEvents++;
+      this.performanceMetrics.lastOptimization = new Date();
+    }
+
+    return optimized;
   }
 }
 
-module.exports = new MLFeedService();
+// Export singleton instance
+const mlFeedService = new MLFeedService();
+
+// Auto-optimize memory every 30 minutes
+setInterval(() => {
+  mlFeedService.optimizeMemoryUsage();
+}, 30 * 60 * 1000);
+
+module.exports = mlFeedService;

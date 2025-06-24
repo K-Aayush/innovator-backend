@@ -53,6 +53,14 @@ class ContentRankingAlgorithm {
       properAspectRatio: 0.1,
       goodLighting: 0.1, // Future: AI-based quality detection
     };
+
+    // Performance tracking
+    this.performanceMetrics = {
+      totalCalculations: 0,
+      averageCalculationTime: 0,
+      cacheHits: 0,
+      cacheMisses: 0,
+    };
   }
 
   // Calculate time decay score
@@ -171,8 +179,11 @@ class ContentRankingAlgorithm {
     return Math.min(1, score);
   }
 
-  // Main ranking algorithm
+  // Main ranking algorithm with performance tracking
   calculateContentRank(content, userProfile, engagementMetrics) {
+    const startTime = Date.now();
+    this.performanceMetrics.totalCalculations++;
+
     const recencyScore = this.calculateRecencyScore(content.createdAt);
     const engagementScore = this.calculateEngagementScore(engagementMetrics);
     const relationshipScore = this.calculateRelationshipScore(
@@ -196,6 +207,11 @@ class ContentRankingAlgorithm {
     // Add time-sensitive boost for new content
     const newContentBoost = this.calculateNewContentBoost(content, userProfile);
 
+    // Update performance metrics
+    const calculationTime = Date.now() - startTime;
+    this.performanceMetrics.averageCalculationTime =
+      (this.performanceMetrics.averageCalculationTime + calculationTime) / 2;
+
     return {
       finalScore: Math.min(1, finalScore + diversityBonus + newContentBoost),
       breakdown: {
@@ -207,6 +223,7 @@ class ContentRankingAlgorithm {
         diversity: diversityBonus,
         newContentBoost,
       },
+      calculationTime,
     };
   }
 
@@ -334,14 +351,46 @@ class ContentRankingAlgorithm {
     return shuffled;
   }
 
-  // Update ranking weights based on user feedback (future enhancement)
+  // Get performance metrics
+  getPerformanceMetrics() {
+    return {
+      ...this.performanceMetrics,
+      efficiency:
+        this.performanceMetrics.cacheHits /
+          (this.performanceMetrics.cacheHits +
+            this.performanceMetrics.cacheMisses) || 0,
+    };
+  }
+
+  // Update ranking weights based on user feedback (ML integration point)
   updateRankingWeights(userFeedback) {
-    // This would use machine learning to adjust weights based on user behavior
-    // For now, it's a placeholder for future ML integration
-    console.log(
-      "Updating ranking weights based on user feedback:",
-      userFeedback
-    );
+    // This integrates with ML to adjust weights based on user behavior
+    const { engagementRate, timeSpent, skipRate } = userFeedback;
+
+    // Adjust weights based on feedback
+    if (engagementRate > 0.8) {
+      this.rankingFactors.engagement.weight = Math.min(
+        0.4,
+        this.rankingFactors.engagement.weight + 0.01
+      );
+    }
+
+    if (timeSpent > 30) {
+      // seconds
+      this.rankingFactors.recency.weight = Math.min(
+        0.3,
+        this.rankingFactors.recency.weight + 0.005
+      );
+    }
+
+    if (skipRate > 0.7) {
+      this.rankingFactors.relationship.weight = Math.min(
+        0.35,
+        this.rankingFactors.relationship.weight + 0.01
+      );
+    }
+
+    console.log("Updated ranking weights based on user feedback");
   }
 }
 

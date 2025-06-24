@@ -1,6 +1,5 @@
 const User = require("../modules/user/user.model");
 const Content = require("../modules/contents/contents.model");
-const Video = require("../modules/video/video.model");
 const Follow = require("../modules/follow/follow.model");
 const Like = require("../modules/likes/likes.model");
 const Comment = require("../modules/comments/comments.model");
@@ -45,6 +44,128 @@ class MLFeedService {
     // Integration with optimization components
     this.contentRanking = ContentRanking;
     this.feedOptimizer = FeedOptimizer;
+  }
+
+  // Helper function to check if content has video files
+  hasVideoFiles(files) {
+    if (!files || !Array.isArray(files)) return false;
+    const videoExtensions = [".mp4", ".mov", ".webm", ".avi", ".mkv", ".m3u8"];
+    return files.some((file) =>
+      videoExtensions.some((ext) => file.toLowerCase().endsWith(ext))
+    );
+  }
+
+  // Helper function to check if content has image files
+  hasImageFiles(files) {
+    if (!files || !Array.isArray(files)) return false;
+    const imageExtensions = [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"];
+    return files.some((file) =>
+      imageExtensions.some((ext) => file.toLowerCase().endsWith(ext))
+    );
+  }
+
+  // Generate HLS playlist URL for videos
+  generateHLSUrl(videoUrl) {
+    if (!videoUrl) return null;
+    const basePath = videoUrl.replace(/\.[^/.]+$/, "");
+    return `${basePath}/playlist.m3u8`;
+  }
+
+  // Generate thumbnail URL
+  generateThumbnailUrl(fileUrl) {
+    if (!fileUrl) return null;
+    const basePath = fileUrl.replace(/\.[^/.]+$/, "");
+    const pathParts = basePath.split("/");
+    pathParts.splice(-1, 0, "thumbnails");
+    return `${pathParts.join("/")}_thumb.jpg`;
+  }
+
+  // Optimized file URL generation with HLS support
+  optimizeFileUrls(files, quality = "auto") {
+    if (!files || files.length === 0) return [];
+
+    return files.map((file) => {
+      const isVideo = this.hasVideoFiles([file]);
+      const isImage = this.hasImageFiles([file]);
+
+      if (isVideo) {
+        const hlsUrl = this.generateHLSUrl(file);
+        const thumbnailUrl = this.generateThumbnailUrl(file);
+
+        // Return different qualities based on request
+        const qualities = {
+          low: {
+            url: thumbnailUrl, // Just thumbnail for low quality
+            type: "image",
+            isVideoThumbnail: true,
+          },
+          medium: {
+            url: hlsUrl || file,
+            type: "video",
+            format: "hls",
+            qualities: ["360p", "480p"],
+          },
+          high: {
+            url: hlsUrl || file,
+            type: "video",
+            format: "hls",
+            qualities: ["480p", "720p", "1080p"],
+          },
+          auto: {
+            url: hlsUrl || file,
+            type: "video",
+            format: "hls",
+            qualities: ["360p", "480p", "720p"],
+          },
+        };
+
+        return {
+          ...(qualities[quality] || qualities.auto),
+          thumbnail: thumbnailUrl,
+          original: file,
+          hls: hlsUrl,
+          fileSize: "streaming", // Indicate streaming content
+        };
+      } else if (isImage) {
+        const thumbnailUrl = this.generateThumbnailUrl(file);
+
+        const qualities = {
+          low: {
+            url: thumbnailUrl,
+            width: 300,
+            height: 200,
+          },
+          medium: {
+            url: thumbnailUrl,
+            width: 600,
+            height: 400,
+          },
+          high: {
+            url: file,
+            width: "original",
+            height: "original",
+          },
+          auto: {
+            url: thumbnailUrl,
+            width: 400,
+            height: 300,
+          },
+        };
+
+        return {
+          ...(qualities[quality] || qualities.auto),
+          type: "image",
+          original: file,
+          thumbnail: thumbnailUrl,
+        };
+      }
+
+      return {
+        url: file,
+        original: file,
+        type: "other",
+      };
+    });
   }
 
   // Get comprehensive user profile for ML with optimization
@@ -97,7 +218,6 @@ class MLFeedService {
       accountAge: user?.createdAt
         ? Date.now() - new Date(user.createdAt).getTime()
         : 0,
-      // Additional data for advanced ranking
       previousInteractions: this.buildInteractionMap(
         recentLikes,
         recentComments
@@ -129,8 +249,6 @@ class MLFeedService {
     const interactions = {};
 
     [...likes, ...comments].forEach((activity) => {
-      // This would need to be enhanced to track author interactions
-      // For now, we'll use a simplified approach
       interactions[activity.uid] = (interactions[activity.uid] || 0) + 1;
     });
 
@@ -169,8 +287,6 @@ class MLFeedService {
 
   // Extract recent authors
   extractRecentAuthors(likes, comments) {
-    // This would need enhancement to track actual authors
-    // For now, return empty array
     return [];
   }
 
@@ -289,174 +405,114 @@ class MLFeedService {
     return score;
   }
 
-  // Optimize file URLs for performance
+  // Optimize content files for performance
   optimizeContentFiles(content, quality = "medium") {
     if (!content.files?.length) return content;
 
-    // Use FeedOptimizer for advanced image optimization
-    const optimizedFiles = content.files.map((file) => {
-      const isVideo = /\.(mp4|mov|webm|avi|mkv)$/i.test(file);
-      const isImage = /\.(jpg|jpeg|png|gif|webp)$/i.test(file);
-
-      if (isVideo) {
-        return this.feedOptimizer.generateVideoStreamingUrls(file, {
-          enableAdaptive: true,
-          enablePreview: quality !== "low",
-        });
-      } else if (isImage) {
-        return this.feedOptimizer.generateResponsiveImageUrls(file, {
-          formats: quality === "high" ? ["webp", "jpg"] : ["jpg"],
-          qualities: quality === "high" ? [60, 80, 95] : [60, 80],
-        });
-      }
-
-      return { url: file, type: "other" };
-    });
+    // Use FeedOptimizer for advanced optimization
+    const optimizedFiles = this.optimizeFileUrls(content.files, quality);
 
     return {
       ...content,
       optimizedFiles,
       files: optimizedFiles.map((f) => f.url || f.hls || f.original), // Maintain compatibility
+      contentType: this.determineContentType(content.files),
     };
   }
 
-  // Main feed generation method with full optimization
-  async generatePersonalizedFeed(userId, userEmail, options = {}) {
-    const startTime = Date.now();
-    this.performanceMetrics.totalRequests++;
-
-    const {
-      page = 0,
-      limit = 50,
-      lastContentId = null,
-      lastVideoId = null,
-      quality = "medium",
-      includeVideos = true,
-      contentOnly = false,
-    } = options;
-
-    try {
-      // Preload critical content in background
-      const userProfile = await this.getUserProfile(userId, userEmail);
-
-      // Start preloading for next request
-      this.feedOptimizer.preloadCriticalContent(userId, userProfile, {
-        preloadCount: limit,
-        priority: "high",
-      });
-
-      // Build base filters
-      const baseFilters = {};
-      if (lastContentId) baseFilters._id = { $lt: lastContentId };
-
-      // Separate queries for content and videos
-      const contentFilters = { ...baseFilters };
-      const videoFilters = { ...baseFilters };
-      if (lastVideoId) videoFilters._id = { $lt: lastVideoId };
-
-      // Fetch content with optimization
-      const [regularContent, videoContent] = await Promise.all([
-        this.fetchOptimizedContent(
-          contentFilters,
-          userProfile,
-          limit,
-          "content"
-        ),
-        includeVideos
-          ? this.fetchOptimizedContent(
-              videoFilters,
-              userProfile,
-              limit,
-              "video"
-            )
-          : [],
-      ]);
-
-      // Get engagement metrics
-      const allContentIds = [
-        ...regularContent.map((c) => c._id.toString()),
-        ...videoContent.map((v) => v._id.toString()),
-      ];
-      const engagementMetrics = await this.getEngagementMetrics(allContentIds);
-
-      // Calculate ML scores and sort using batch processing
-      const [scoredContent, scoredVideos] = await Promise.all([
-        this.feedOptimizer.batchProcessContent(
-          regularContent,
-          async (content) =>
-            await this.scoreAndOptimizeContent(
-              content,
-              userProfile,
-              engagementMetrics,
-              quality
-            ),
-          { priority: "high" }
-        ),
-        this.feedOptimizer.batchProcessContent(
-          videoContent,
-          async (content) =>
-            await this.scoreAndOptimizeContent(
-              content,
-              userProfile,
-              engagementMetrics,
-              quality
-            ),
-          { priority: "high" }
-        ),
-      ]);
-
-      // Use ContentRanking for sophisticated feed mixing
-      const mixedFeed = this.contentRanking.mixFeedContent(
-        scoredContent.sort((a, b) => b.mlScore - a.mlScore),
-        scoredVideos.sort((a, b) => b.mlScore - a.mlScore),
-        {
-          contentVideoRatio: 3,
-          maxConsecutiveVideos: 2,
-          maxConsecutiveContent: 4,
-          shuffleWithinGroups: true,
-        }
-      );
-
-      // Enrich with user interaction data
-      const enrichedFeed = await this.enrichWithUserData(
-        contentOnly ? scoredContent : mixedFeed,
-        userEmail
-      );
-
-      // Update performance metrics
-      const responseTime = Date.now() - startTime;
-      this.performanceMetrics.averageResponseTime =
-        (this.performanceMetrics.averageResponseTime + responseTime) / 2;
-
-      return {
-        success: true,
-        data: {
-          feed: enrichedFeed.slice(0, limit),
-          videoContent: scoredVideos.slice(0, limit),
-          regularContent: scoredContent.slice(0, limit),
-          hasMoreContent: scoredContent.length >= limit,
-          hasMoreVideos: scoredVideos.length >= limit,
-          nextContentCursor:
-            scoredContent.length > 0
-              ? scoredContent[scoredContent.length - 1]._id
-              : null,
-          nextVideoCursor:
-            scoredVideos.length > 0
-              ? scoredVideos[scoredVideos.length - 1]._id
-              : null,
-          mlMetrics: {
-            totalProcessed: allContentIds.length,
-            cacheHitRate: this.calculateCacheHitRate(),
-            diversityScore: this.calculateDiversityScore(enrichedFeed),
-            responseTime,
-            optimizationLevel: this.assessOptimizationLevel(),
-          },
-        },
-      };
-    } catch (error) {
-      console.error("ML Feed Generation Error:", error);
-      throw error;
+  // Determine content type based on files
+  determineContentType(files) {
+    if (!files || !Array.isArray(files) || files.length === 0) {
+      return "text";
     }
+
+    const hasVideo = this.hasVideoFiles(files);
+    const hasImage = this.hasImageFiles(files);
+
+    if (hasVideo) return "video";
+    if (hasImage) return "image";
+    return "text";
+  }
+
+  // Fetch optimized content based on ML strategy (Content model only)
+  async fetchOptimizedContent(
+    filters,
+    userProfile,
+    limit,
+    contentType = "all"
+  ) {
+    const fetchLimit = Math.min(limit * 3, 150); // Fetch more for better ML selection
+
+    // Add content type filtering
+    if (contentType === "video") {
+      // Filter for content with video files
+      filters.$expr = {
+        $gt: [
+          {
+            $size: {
+              $filter: {
+                input: { $ifNull: ["$files", []] },
+                cond: {
+                  $regexMatch: {
+                    input: "$$this",
+                    regex: /\.(mp4|mov|webm|avi|mkv|m3u8)$/i,
+                  },
+                },
+              },
+            },
+          },
+          0,
+        ],
+      };
+    } else if (contentType === "text") {
+      // Filter for content without video files (text/image only)
+      filters.$expr = {
+        $eq: [
+          {
+            $size: {
+              $filter: {
+                input: { $ifNull: ["$files", []] },
+                cond: {
+                  $regexMatch: {
+                    input: "$$this",
+                    regex: /\.(mp4|mov|webm|avi|mkv|m3u8)$/i,
+                  },
+                },
+              },
+            },
+          },
+          0,
+        ],
+      };
+    }
+
+    // Prioritize followed users content
+    const followedContent = await Content.find({
+      ...filters,
+      "author.email": { $in: userProfile.followingEmails.slice(0, 100) },
+    })
+      .sort({ _id: -1 })
+      .limit(Math.ceil(fetchLimit * 0.6))
+      .lean();
+
+    // Get discovery content
+    const discoveryContent = await Content.find({
+      ...filters,
+      "author.email": { $nin: userProfile.followingEmails },
+    })
+      .sort({ _id: -1 })
+      .limit(Math.ceil(fetchLimit * 0.4))
+      .lean();
+
+    // Combine and deduplicate
+    const combined = [...followedContent, ...discoveryContent];
+    const seen = new Set();
+    return combined.filter((item) => {
+      const id = item._id.toString();
+      if (seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
   }
 
   // Score and optimize content
@@ -480,57 +536,6 @@ class MLFeedService {
     };
   }
 
-  // Fetch optimized content based on ML strategy
-  async fetchOptimizedContent(filters, userProfile, limit, type) {
-    const fetchLimit = Math.min(limit * 3, 150); // Fetch more for better ML selection
-
-    // Prioritize followed users content
-    const followedContent =
-      type === "video"
-        ? await Video.find({
-            ...filters,
-            "author.email": { $in: userProfile.followingEmails.slice(0, 100) },
-          })
-            .sort({ _id: -1 })
-            .limit(Math.ceil(fetchLimit * 0.6))
-            .lean()
-        : await Content.find({
-            ...filters,
-            "author.email": { $in: userProfile.followingEmails.slice(0, 100) },
-          })
-            .sort({ _id: -1 })
-            .limit(Math.ceil(fetchLimit * 0.6))
-            .lean();
-
-    // Get discovery content
-    const discoveryContent =
-      type === "video"
-        ? await Video.find({
-            ...filters,
-            "author.email": { $nin: userProfile.followingEmails },
-          })
-            .sort({ _id: -1 })
-            .limit(Math.ceil(fetchLimit * 0.4))
-            .lean()
-        : await Content.find({
-            ...filters,
-            "author.email": { $nin: userProfile.followingEmails },
-          })
-            .sort({ _id: -1 })
-            .limit(Math.ceil(fetchLimit * 0.4))
-            .lean();
-
-    // Combine and deduplicate
-    const combined = [...followedContent, ...discoveryContent];
-    const seen = new Set();
-    return combined.filter((item) => {
-      const id = item._id.toString();
-      if (seen.has(id)) return false;
-      seen.add(id);
-      return true;
-    });
-  }
-
   // Calculate content priority (new posts get boost)
   calculatePriority(content, userProfile) {
     const ageInMinutes =
@@ -548,6 +553,99 @@ class MLFeedService {
     }
 
     return 0;
+  }
+
+  // Main feed generation method with full optimization (Content model only)
+  async generatePersonalizedFeed(userId, userEmail, options = {}) {
+    const startTime = Date.now();
+    this.performanceMetrics.totalRequests++;
+
+    const {
+      page = 0,
+      limit = 50,
+      lastContentId = null,
+      quality = "medium",
+      contentType = "all", // 'all', 'video', 'text', 'image'
+      trending = false,
+      since = null,
+    } = options;
+
+    try {
+      // Preload critical content in background
+      const userProfile = await this.getUserProfile(userId, userEmail);
+
+      // Start preloading for next request
+      this.feedOptimizer.preloadCriticalContent(userId, userProfile, {
+        preloadCount: limit,
+        priority: "high",
+      });
+
+      // Build base filters
+      const baseFilters = {};
+      if (lastContentId) baseFilters._id = { $lt: lastContentId };
+      if (trending && since) baseFilters.createdAt = { $gte: since };
+
+      // Fetch content with optimization (Content model only)
+      const content = await this.fetchOptimizedContent(
+        baseFilters,
+        userProfile,
+        limit,
+        contentType
+      );
+
+      // Get engagement metrics
+      const contentIds = content.map((c) => c._id.toString());
+      const engagementMetrics = await this.getEngagementMetrics(contentIds);
+
+      // Calculate ML scores and sort using batch processing
+      const scoredContent = await this.feedOptimizer.batchProcessContent(
+        content,
+        async (item) =>
+          await this.scoreAndOptimizeContent(
+            item,
+            userProfile,
+            engagementMetrics,
+            quality
+          ),
+        { priority: "high" }
+      );
+
+      // Sort by ML score
+      const sortedContent = scoredContent.sort((a, b) => b.mlScore - a.mlScore);
+
+      // Enrich with user interaction data
+      const enrichedFeed = await this.enrichWithUserData(
+        sortedContent,
+        userEmail
+      );
+
+      // Update performance metrics
+      const responseTime = Date.now() - startTime;
+      this.performanceMetrics.averageResponseTime =
+        (this.performanceMetrics.averageResponseTime + responseTime) / 2;
+
+      return {
+        success: true,
+        data: {
+          feed: enrichedFeed.slice(0, limit),
+          hasMore: enrichedFeed.length >= limit,
+          nextCursor:
+            enrichedFeed.length > 0
+              ? enrichedFeed[enrichedFeed.length - 1]._id
+              : null,
+          mlMetrics: {
+            totalProcessed: contentIds.length,
+            cacheHitRate: this.calculateCacheHitRate(),
+            diversityScore: this.calculateDiversityScore(enrichedFeed),
+            responseTime,
+            optimizationLevel: this.assessOptimizationLevel(),
+          },
+        },
+      };
+    } catch (error) {
+      console.error("ML Feed Generation Error:", error);
+      throw error;
+    }
   }
 
   // Enrich content with user interaction data
@@ -596,8 +694,8 @@ class MLFeedService {
   // Calculate diversity score
   calculateDiversityScore(feed) {
     const authors = new Set(feed.map((item) => item.author.email));
-    const types = new Set(feed.map((item) => item.type || item.feedType));
-    return (authors.size / feed.length) * (types.size / 5); // Normalize by max expected types
+    const types = new Set(feed.map((item) => item.contentType || "text"));
+    return (authors.size / feed.length) * (types.size / 3); // Normalize by max expected types (text, image, video)
   }
 
   // Assess optimization level

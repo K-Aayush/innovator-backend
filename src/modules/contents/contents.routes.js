@@ -9,7 +9,7 @@ const {
   DeleteContent,
 } = require("./contents.methods");
 
-// Import new ML-powered feed methods
+// Import new ML-powered feed methods (Content model only)
 const {
   GetPersonalizedFeed,
   GetVideoFeed,
@@ -44,14 +44,14 @@ router.get("/content/:id/views", basicMiddleware, GetViewCount);
 // delete whole contents
 router.delete("/delete-content/:id", basicMiddleware, DeleteContent);
 
-// NEW ML-POWERED FEED ROUTES
-// Main personalized feed (Instagram-like with mixed content)
+// NEW ML-POWERED FEED ROUTES (Content model only)
+// Main personalized feed (Instagram-like with mixed content including videos)
 router.get("/feed", basicMiddleware, GetPersonalizedFeed);
 
-// Video-only feed (for video tab/page)
+// Video-only feed (for video tab/page) - filters content with video files
 router.get("/feed/videos", basicMiddleware, GetVideoFeed);
 
-// Content-only feed (for content tab/page)
+// Content-only feed (for content tab/page) - filters content without video files
 router.get("/feed/content", basicMiddleware, GetContentFeed);
 
 // Trending feed
@@ -64,7 +64,7 @@ router.post("/feed/refresh", basicMiddleware, RefreshFeed);
 router.get("/feed/analytics", basicMiddleware, GetFeedAnalytics);
 
 // LEGACY ROUTES (kept for backward compatibility)
-// get data - optimized
+// get data - optimized with content type filtering
 router.get("/list-contents", basicMiddleware, ListContents);
 
 // load engagement data on demand

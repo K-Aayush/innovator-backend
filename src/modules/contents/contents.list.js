@@ -278,7 +278,7 @@ const fetchAndScoreContent = async (
     return cachedContent;
   }
 
-  // Add content type filtering
+  // Add content type filtering - FIXED TO PROPERLY EXCLUDE VIDEOS FROM TEXT FEED
   let typeFilters = { ...filters };
 
   if (contentType === "video") {
@@ -302,7 +302,7 @@ const fetchAndScoreContent = async (
       ],
     };
   } else if (contentType === "text") {
-    // Filter for content without video files (text/image only)
+    // Filter for content WITHOUT video files (text/image only)
     typeFilters.$expr = {
       $eq: [
         {
@@ -464,24 +464,38 @@ const fetchAndScoreContent = async (
   return result;
 };
 
-// Minimal content enrichment - only essential data
+// Enhanced content enrichment with proper engagement data
 const enrichContent = async (contents, userEmail) => {
   if (!contents || contents.length === 0) return [];
 
   const contentIds = contents.map((c) => c._id.toString());
 
-  // Only fetch user's likes - skip counts for performance
-  const userLikes = await Likes.find({
-    uid: { $in: contentIds },
-    type: "content",
-    "user.email": userEmail,
-  })
-    .select("uid")
-    .lean();
+  // Get engagement data and user interactions
+  const [likesData, commentsData, userLikes] = await Promise.all([
+    Likes.aggregate([
+      { $match: { uid: { $in: contentIds }, type: "content" } },
+      { $group: { _id: "$uid", count: { $sum: 1 } } },
+    ]),
+    Comment.aggregate([
+      { $match: { uid: { $in: contentIds }, type: "content" } },
+      { $group: { _id: "$uid", count: { $sum: 1 } } },
+    ]),
+    Likes.find({
+      uid: { $in: contentIds },
+      type: "content",
+      "user.email": userEmail,
+    })
+      .select("uid")
+      .lean(),
+  ]);
 
+  const likesMap = new Map(likesData.map((item) => [item._id, item.count]));
+  const commentsMap = new Map(
+    commentsData.map((item) => [item._id, item.count])
+  );
   const userLikesSet = new Set(userLikes.map((like) => like.uid));
 
-  // Return minimal enriched data
+  // Return enriched data with proper engagement counts
   return contents.map((content) => ({
     _id: content._id,
     status: content.status,
@@ -501,10 +515,10 @@ const enrichContent = async (contents, userEmail) => {
     originalContent: content.originalContent,
     liked: userLikesSet.has(content._id.toString()),
     loadPriority: content.loadPriority,
-    // Placeholder counts - will be loaded on demand
-    likes: 0,
-    comments: 0,
-    engagementLoaded: false,
+    // Proper engagement counts
+    likes: likesMap.get(content._id.toString()) || 0,
+    comments: commentsMap.get(content._id.toString()) || 0,
+    engagementLoaded: true,
   }));
 };
 
@@ -518,7 +532,7 @@ const ListContents = async (req, res) => {
       lastId,
       pageSize = 8, // Reduced default page size
       quality = "auto",
-      loadEngagement = "false", // Optional engagement loading
+      loadEngagement = "true", // Default to true for proper engagement loading
       contentType = "all", // 'all', 'video', 'image', 'text'
     } = req.query;
 
@@ -569,36 +583,8 @@ const ListContents = async (req, res) => {
       selectedContent = allContents.slice(0, pageSizeNum);
     }
 
-    // Enrich content with minimal data
+    // Enrich content with engagement data
     const finalContent = await enrichContent(selectedContent, user.email);
-
-    // Optionally load engagement data
-    if (shouldLoadEngagement) {
-      const contentIds = finalContent.map((c) => c._id.toString());
-
-      const [likesData, commentsData] = await Promise.all([
-        Likes.aggregate([
-          { $match: { uid: { $in: contentIds }, type: "content" } },
-          { $group: { _id: "$uid", count: { $sum: 1 } } },
-        ]),
-        Comment.aggregate([
-          { $match: { uid: { $in: contentIds }, type: "content" } },
-          { $group: { _id: "$uid", count: { $sum: 1 } } },
-        ]),
-      ]);
-
-      const likesMap = new Map(likesData.map((item) => [item._id, item.count]));
-      const commentsMap = new Map(
-        commentsData.map((item) => [item._id, item.count])
-      );
-
-      // Update engagement data
-      finalContent.forEach((content) => {
-        content.likes = likesMap.get(content._id.toString()) || 0;
-        content.comments = commentsMap.get(content._id.toString()) || 0;
-        content.engagementLoaded = true;
-      });
-    }
 
     const hasMore = selectedContent.length >= pageSizeNum;
 

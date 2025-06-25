@@ -5,7 +5,7 @@ const Comment = require("./comments.model");
 const Content = require("../contents/contents.model");
 const Video = require("../../modules/video/video.model");
 const Notification = require("../notifications/notification.model");
-const Course = require("../courses/courses.model")
+const Course = require("../courses/courses.model");
 const { CleanUpAfterDeleteComment } = require("./comments.cleanup");
 
 // Add Comment
@@ -57,7 +57,7 @@ const AddComment = async (req, res) => {
     if (type === "content") {
       item = await Content.findById(uid);
     } else if (type === "course") {
-      item = await Course.findById(uid); 
+      item = await Course.findById(uid);
     } else if (type === "video" || type === "reel") {
       item = await Video.findById(uid);
       // For videos and reels, we'll store the comment type as "video" in the database
@@ -78,7 +78,7 @@ const AddComment = async (req, res) => {
 
     await newData.save();
 
-    // Create notification for content author
+    // Create notification for content author with enhanced metadata
     const notification = new Notification({
       recipient: {
         _id: item.author._id,
@@ -96,6 +96,20 @@ const AddComment = async (req, res) => {
         itemId: uid,
         itemType: type,
         commentId: newData._id.toString(),
+        redirectUrl: generateRedirectUrl(type, uid, newData._id.toString()),
+        redirectType: "post",
+        additionalInfo: {
+          commentText: comment.substring(0, 100), // First 100 chars
+          timestamp: new Date(),
+        },
+      },
+      actionData: {
+        action: "comment",
+        targetType: type,
+        targetId: uid,
+        contextText: `${user.name} commented: "${comment.substring(0, 50)}${
+          comment.length > 50 ? "..." : ""
+        }"`,
       },
     });
 
@@ -117,6 +131,23 @@ const AddComment = async (req, res) => {
       error?.message
     );
     return res.status(500).json(response);
+  }
+};
+
+// Helper function to generate redirect URLs for comments
+const generateRedirectUrl = (type, itemId, commentId) => {
+  const baseUrl = "/api/v1";
+
+  switch (type) {
+    case "content":
+      return `${baseUrl}/content/${itemId}?comment=${commentId}`;
+    case "video":
+    case "reel":
+      return `${baseUrl}/video/${itemId}?comment=${commentId}`;
+    case "course":
+      return `${baseUrl}/course/${itemId}?comment=${commentId}`;
+    default:
+      return `${baseUrl}/home`;
   }
 };
 

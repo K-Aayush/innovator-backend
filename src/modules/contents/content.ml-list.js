@@ -1,6 +1,8 @@
 const MLFeedService = require("../../services/mlFeedService");
 const GenRes = require("../../utils/routers/GenRes");
 const { isValidObjectId } = require("mongoose");
+const Like = require("../likes/likes.model");
+const Comment = require("../comments/comments.model");
 
 // Get personalized ML-powered feed (content only - including videos)
 const GetPersonalizedFeed = async (req, res) => {
@@ -44,6 +46,44 @@ const GetPersonalizedFeed = async (req, res) => {
       user.email,
       options
     );
+
+    // Enrich with engagement data
+    const contentIds = result.data.feed.map((item) => item._id.toString());
+
+    if (contentIds.length > 0) {
+      const [likesData, commentsData, userLikes] = await Promise.all([
+        Like.aggregate([
+          { $match: { uid: { $in: contentIds }, type: "content" } },
+          { $group: { _id: "$uid", count: { $sum: 1 } } },
+        ]),
+        Comment.aggregate([
+          { $match: { uid: { $in: contentIds }, type: "content" } },
+          { $group: { _id: "$uid", count: { $sum: 1 } } },
+        ]),
+        Like.find({
+          uid: { $in: contentIds },
+          type: "content",
+          "user.email": user.email,
+        })
+          .select("uid")
+          .lean(),
+      ]);
+
+      const likesMap = new Map(likesData.map((item) => [item._id, item.count]));
+      const commentsMap = new Map(
+        commentsData.map((item) => [item._id, item.count])
+      );
+      const userLikesSet = new Set(userLikes.map((like) => like.uid));
+
+      // Update feed items with engagement data
+      result.data.feed = result.data.feed.map((item) => ({
+        ...item,
+        likes: likesMap.get(item._id.toString()) || 0,
+        comments: commentsMap.get(item._id.toString()) || 0,
+        liked: userLikesSet.has(item._id.toString()),
+        engagementLoaded: true,
+      }));
+    }
 
     return res
       .status(200)
@@ -102,6 +142,43 @@ const GetVideoFeed = async (req, res) => {
       options
     );
 
+    // Enrich with engagement data
+    const contentIds = result.data.feed.map((item) => item._id.toString());
+
+    if (contentIds.length > 0) {
+      const [likesData, commentsData, userLikes] = await Promise.all([
+        Like.aggregate([
+          { $match: { uid: { $in: contentIds }, type: "content" } },
+          { $group: { _id: "$uid", count: { $sum: 1 } } },
+        ]),
+        Comment.aggregate([
+          { $match: { uid: { $in: contentIds }, type: "content" } },
+          { $group: { _id: "$uid", count: { $sum: 1 } } },
+        ]),
+        Like.find({
+          uid: { $in: contentIds },
+          type: "content",
+          "user.email": user.email,
+        })
+          .select("uid")
+          .lean(),
+      ]);
+
+      const likesMap = new Map(likesData.map((item) => [item._id, item.count]));
+      const commentsMap = new Map(
+        commentsData.map((item) => [item._id, item.count])
+      );
+      const userLikesSet = new Set(userLikes.map((like) => like.uid));
+
+      result.data.feed = result.data.feed.map((item) => ({
+        ...item,
+        likes: likesMap.get(item._id.toString()) || 0,
+        comments: commentsMap.get(item._id.toString()) || 0,
+        liked: userLikesSet.has(item._id.toString()),
+        engagementLoaded: true,
+      }));
+    }
+
     return res.status(200).json(
       GenRes(
         200,
@@ -121,7 +198,7 @@ const GetVideoFeed = async (req, res) => {
   }
 };
 
-// Get content-only feed (no videos)
+// Get content-only feed (no videos) - FIXED TO EXCLUDE VIDEOS
 const GetContentFeed = async (req, res) => {
   try {
     const {
@@ -161,6 +238,43 @@ const GetContentFeed = async (req, res) => {
       user.email,
       options
     );
+
+    // Enrich with engagement data
+    const contentIds = result.data.feed.map((item) => item._id.toString());
+
+    if (contentIds.length > 0) {
+      const [likesData, commentsData, userLikes] = await Promise.all([
+        Like.aggregate([
+          { $match: { uid: { $in: contentIds }, type: "content" } },
+          { $group: { _id: "$uid", count: { $sum: 1 } } },
+        ]),
+        Comment.aggregate([
+          { $match: { uid: { $in: contentIds }, type: "content" } },
+          { $group: { _id: "$uid", count: { $sum: 1 } } },
+        ]),
+        Like.find({
+          uid: { $in: contentIds },
+          type: "content",
+          "user.email": user.email,
+        })
+          .select("uid")
+          .lean(),
+      ]);
+
+      const likesMap = new Map(likesData.map((item) => [item._id, item.count]));
+      const commentsMap = new Map(
+        commentsData.map((item) => [item._id, item.count])
+      );
+      const userLikesSet = new Set(userLikes.map((like) => like.uid));
+
+      result.data.feed = result.data.feed.map((item) => ({
+        ...item,
+        likes: likesMap.get(item._id.toString()) || 0,
+        comments: commentsMap.get(item._id.toString()) || 0,
+        liked: userLikesSet.has(item._id.toString()),
+        engagementLoaded: true,
+      }));
+    }
 
     return res.status(200).json(
       GenRes(
@@ -231,6 +345,42 @@ const GetTrendingFeed = async (req, res) => {
       })
       .slice(0, limitNum);
 
+    // Enrich with engagement data
+    const contentIds = trendingItems.map((item) => item._id.toString());
+
+    if (contentIds.length > 0) {
+      const [likesData, commentsData, userLikes] = await Promise.all([
+        Like.aggregate([
+          { $match: { uid: { $in: contentIds }, type: "content" } },
+          { $group: { _id: "$uid", count: { $sum: 1 } } },
+        ]),
+        Comment.aggregate([
+          { $match: { uid: { $in: contentIds }, type: "content" } },
+          { $group: { _id: "$uid", count: { $sum: 1 } } },
+        ]),
+        Like.find({
+          uid: { $in: contentIds },
+          type: "content",
+          "user.email": user.email,
+        })
+          .select("uid")
+          .lean(),
+      ]);
+
+      const likesMap = new Map(likesData.map((item) => [item._id, item.count]));
+      const commentsMap = new Map(
+        commentsData.map((item) => [item._id, item.count])
+      );
+      const userLikesSet = new Set(userLikes.map((like) => like.uid));
+
+      trendingItems.forEach((item) => {
+        item.likes = likesMap.get(item._id.toString()) || 0;
+        item.comments = commentsMap.get(item._id.toString()) || 0;
+        item.liked = userLikesSet.has(item._id.toString());
+        item.engagementLoaded = true;
+      });
+    }
+
     return res.status(200).json(
       GenRes(
         200,
@@ -263,6 +413,43 @@ const RefreshFeed = async (req, res) => {
       user.email,
       { limit: 50, quality: "medium" }
     );
+
+    // Enrich with engagement data
+    const contentIds = result.data.feed.map((item) => item._id.toString());
+
+    if (contentIds.length > 0) {
+      const [likesData, commentsData, userLikes] = await Promise.all([
+        Like.aggregate([
+          { $match: { uid: { $in: contentIds }, type: "content" } },
+          { $group: { _id: "$uid", count: { $sum: 1 } } },
+        ]),
+        Comment.aggregate([
+          { $match: { uid: { $in: contentIds }, type: "content" } },
+          { $group: { _id: "$uid", count: { $sum: 1 } } },
+        ]),
+        Like.find({
+          uid: { $in: contentIds },
+          type: "content",
+          "user.email": user.email,
+        })
+          .select("uid")
+          .lean(),
+      ]);
+
+      const likesMap = new Map(likesData.map((item) => [item._id, item.count]));
+      const commentsMap = new Map(
+        commentsData.map((item) => [item._id, item.count])
+      );
+      const userLikesSet = new Set(userLikes.map((like) => like.uid));
+
+      result.data.feed = result.data.feed.map((item) => ({
+        ...item,
+        likes: likesMap.get(item._id.toString()) || 0,
+        comments: commentsMap.get(item._id.toString()) || 0,
+        liked: userLikesSet.has(item._id.toString()),
+        engagementLoaded: true,
+      }));
+    }
 
     return res
       .status(200)

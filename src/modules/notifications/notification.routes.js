@@ -2,6 +2,7 @@ const router = require("express").Router();
 const basicMiddleware = require("../../middlewares/basicMiddleware");
 const {
   GetNotifications,
+  HandleNotificationClick,
   MarkAsRead,
   MarkAllAsRead,
   DeleteNotification,
@@ -9,6 +10,11 @@ const {
 } = require("./notification.methods");
 
 router.get("/notifications", basicMiddleware, GetNotifications);
+router.post(
+  "/notifications/:notificationId/click",
+  basicMiddleware,
+  HandleNotificationClick
+);
 router.post("/notifications/mark-read", basicMiddleware, MarkAsRead);
 router.post("/notifications/mark-all-read", basicMiddleware, MarkAllAsRead);
 router.delete("/notifications/:id", basicMiddleware, DeleteNotification);

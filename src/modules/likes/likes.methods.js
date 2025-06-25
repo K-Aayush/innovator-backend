@@ -5,7 +5,7 @@ const User = require("../user/user.model");
 const Content = require("../contents/contents.model");
 const Video = require("../../modules/video/video.model");
 const Notification = require("../notifications/notification.model");
-const Course = require("../courses/courses.model")
+const Course = require("../courses/courses.model");
 
 const LikeHandler = async (req, res) => {
   try {
@@ -55,8 +55,7 @@ const LikeHandler = async (req, res) => {
       if (type === "content") {
         itemExists = await Content.findById(uid);
       } else if (type === "course") {
-        // Assuming you have a Course model
-        itemExists = await Course.findById(uid); 
+        itemExists = await Course.findById(uid);
       } else if (type === "video" || type === "reel") {
         itemExists = await Video.findById(uid);
         // For videos and reels, we'll store the like type as "video" in the database
@@ -81,7 +80,7 @@ const LikeHandler = async (req, res) => {
         });
         await newLike.save();
 
-        // Create notification object
+        // Create notification object with enhanced metadata for redirection
         const notification = new Notification({
           recipient: {
             _id: itemExists.author._id,
@@ -100,6 +99,18 @@ const LikeHandler = async (req, res) => {
             itemId: uid,
             itemType: type,
             contentTitle: itemExists.title || itemExists.status || "content",
+            redirectUrl: generateRedirectUrl(type, uid),
+            redirectType: "post",
+            additionalInfo: {
+              likeId: newLike._id.toString(),
+              timestamp: new Date(),
+            },
+          },
+          actionData: {
+            action: "like",
+            targetType: type,
+            targetId: uid,
+            contextText: `${getUser.name} liked your ${type}`,
           },
         });
 
@@ -147,6 +158,23 @@ const LikeHandler = async (req, res) => {
       error?.message || "Server Error"
     );
     return res.status(500).json(response);
+  }
+};
+
+// Helper function to generate redirect URLs
+const generateRedirectUrl = (type, itemId) => {
+  const baseUrl = "/api/v1";
+
+  switch (type) {
+    case "content":
+      return `${baseUrl}/content/${itemId}`;
+    case "video":
+    case "reel":
+      return `${baseUrl}/video/${itemId}`;
+    case "course":
+      return `${baseUrl}/course/${itemId}`;
+    default:
+      return `${baseUrl}/home`;
   }
 };
 

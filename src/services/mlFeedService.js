@@ -434,7 +434,7 @@ class MLFeedService {
     return "text";
   }
 
-  // Fetch optimized content based on ML strategy (Content model only)
+  // Fetch optimized content based on ML strategy (Content model only) - FIXED FILTERING
   async fetchOptimizedContent(
     filters,
     userProfile,
@@ -443,7 +443,7 @@ class MLFeedService {
   ) {
     const fetchLimit = Math.min(limit * 3, 150); // Fetch more for better ML selection
 
-    // Add content type filtering
+    // Add content type filtering - FIXED TO PROPERLY EXCLUDE VIDEOS
     if (contentType === "video") {
       // Filter for content with video files
       filters.$expr = {
@@ -465,7 +465,7 @@ class MLFeedService {
         ],
       };
     } else if (contentType === "text") {
-      // Filter for content without video files (text/image only)
+      // Filter for content WITHOUT video files (text/image only)
       filters.$expr = {
         $eq: [
           {

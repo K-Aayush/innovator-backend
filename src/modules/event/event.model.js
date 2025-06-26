@@ -53,7 +53,7 @@ const EventSchema = new Schema(
     tags: [String],
     price: {
       amount: { type: Number, default: 0 },
-      currency: { type: String, default: "USD" },
+      currency: { type: String, default: "NPR" },
       isFree: { type: Boolean, default: true },
     },
     contactInfo: {

@@ -5,6 +5,7 @@ const {
 } = require("../../middlewares/firebaseMiddleware");
 const UserFiles = require("../../utils/fileProcessor/multer.users");
 const LoginUser = require("./user.login");
+const ChangePassword = require("./user.changePassword");
 const {
   UserExist,
   UserProfile,
@@ -44,6 +45,9 @@ router.post(
   SetAvatar
 );
 router.post("/set-details", basicMiddleware, SetDetails);
+
+// Change password
+router.post("/change-password", basicMiddleware, ChangePassword);
 
 // FCM token route
 router.post("/update-fcm-token", basicMiddleware, UpdateFCMToken);

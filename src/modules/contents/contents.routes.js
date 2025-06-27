@@ -1,5 +1,4 @@
 const basicMiddleware = require("../../middlewares/basicMiddleware");
-const adminMiddleware = require("../../middlewares/adminMiddleware");
 const rateLimit = require("express-rate-limit");
 const UserFiles = require("../../utils/fileProcessor/multer.users.js");
 const { MultipleFiles, SingleFile, DeleteFiles } = require("./contents.files");
@@ -75,7 +74,7 @@ router.get(
   feedRateLimiter,
   validateFeedParams,
   (req, res, next) => {
-    req.startTime = Date.now(); 
+    req.startTime = Date.now();
     next();
   },
   GetFeed
@@ -86,16 +85,11 @@ router.get("/list-contents", basicMiddleware, ListContents);
 router.post("/load-engagement", basicMiddleware, LoadEngagementData);
 
 // Admin routes
-router.get(
-  "/list-admin-contents/:page",
-  basicMiddleware,
-  adminMiddleware,
-  ListContents
-);
+router.get("/list-admin-contents/:page", basicMiddleware, ListContents);
 router.delete(
   "/admin-delete-content/:id",
   basicMiddleware,
-  adminMiddleware,
+
   async (req, res, next) => {
     const { id } = req.params;
     viewCountCache.del(`views_${id}`);

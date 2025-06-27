@@ -1,3 +1,4 @@
+// MLFeedService.js
 const User = require("../modules/user/user.model");
 const Content = require("../modules/contents/contents.model");
 const Follow = require("../modules/follow/follow.model");
@@ -14,21 +15,22 @@ const feedCache = new NodeCache({ stdTTL: 300 }); // 5 minutes
 const userProfileCache = new NodeCache({ stdTTL: 600 }); // 10 minutes
 const engagementCache = new NodeCache({ stdTTL: 180 }); // 3 minutes
 const mlScoreCache = new NodeCache({ stdTTL: 900 }); // 15 minutes
+const seenContentCache = new NodeCache({ stdTTL: 86400 }); // 24 hours for seen content
 
 class MLFeedService {
   constructor() {
     this.contentWeights = {
-      recency: 0.25,
-      engagement: 0.3,
-      relationship: 0.25,
-      userPreference: 0.2,
+      recency: 0.3, // Increased weight for Instagram-like recency focus
+      engagement: 0.35, // Higher weight for engagement
+      relationship: 0.25, // Strong focus on followed users
+      userPreference: 0.1, // Slightly reduced to balance exploration
     };
 
     this.engagementWeights = {
       like: 1,
-      comment: 3,
-      share: 5,
-      view: 0.1,
+      comment: 4, // Increased weight for comments (Instagram prioritizes comments)
+      share: 6, // Increased weight for shares
+      view: 0.2, // Slightly higher weight for views
     };
 
     // Performance monitoring
@@ -41,9 +43,23 @@ class MLFeedService {
       optimizationEvents: 0,
     };
 
-    // Integration with optimization components
     this.contentRanking = ContentRanking;
     this.feedOptimizer = FeedOptimizer;
+  }
+
+  // Helper to track seen content
+  trackSeenContent(userId, contentIds) {
+    const key = `seen_${userId}`;
+    const existing = seenContentCache.get(key) || new Set();
+    contentIds.forEach((id) => existing.add(id.toString()));
+    seenContentCache.set(key, existing);
+    return existing;
+  }
+
+  // Helper to get seen content
+  getSeenContent(userId) {
+    const key = `seen_${userId}`;
+    return seenContentCache.get(key) || new Set();
   }
 
   // Helper function to check if content has video files
@@ -92,10 +108,9 @@ class MLFeedService {
         const hlsUrl = this.generateHLSUrl(file);
         const thumbnailUrl = this.generateThumbnailUrl(file);
 
-        // Return different qualities based on request
         const qualities = {
           low: {
-            url: thumbnailUrl, // Just thumbnail for low quality
+            url: thumbnailUrl,
             type: "image",
             isVideoThumbnail: true,
           },
@@ -104,18 +119,21 @@ class MLFeedService {
             type: "video",
             format: "hls",
             qualities: ["360p", "480p"],
+            preload: "metadata", // Instagram-like preload for videos
           },
           high: {
             url: hlsUrl || file,
             type: "video",
             format: "hls",
             qualities: ["480p", "720p", "1080p"],
+            preload: "auto", // Autoplay for high-priority videos
           },
           auto: {
             url: hlsUrl || file,
             type: "video",
             format: "hls",
             qualities: ["360p", "480p", "720p"],
+            preload: "metadata",
           },
         };
 
@@ -124,32 +142,18 @@ class MLFeedService {
           thumbnail: thumbnailUrl,
           original: file,
           hls: hlsUrl,
-          fileSize: "streaming", // Indicate streaming content
+          fileSize: "streaming",
+          autoplay: quality === "high" || quality === "auto", // Instagram-like autoplay
+          muted: true, // Videos autoplay muted
         };
       } else if (isImage) {
         const thumbnailUrl = this.generateThumbnailUrl(file);
 
         const qualities = {
-          low: {
-            url: thumbnailUrl,
-            width: 300,
-            height: 200,
-          },
-          medium: {
-            url: thumbnailUrl,
-            width: 600,
-            height: 400,
-          },
-          high: {
-            url: file,
-            width: "original",
-            height: "original",
-          },
-          auto: {
-            url: thumbnailUrl,
-            width: 400,
-            height: 300,
-          },
+          low: { url: thumbnailUrl, width: 300, height: 200 },
+          medium: { url: thumbnailUrl, width: 600, height: 400 },
+          high: { url: file, width: "original", height: "original" },
+          auto: { url: thumbnailUrl, width: 400, height: 300 },
         };
 
         return {
@@ -157,6 +161,7 @@ class MLFeedService {
           type: "image",
           original: file,
           thumbnail: thumbnailUrl,
+          progressiveLoading: true, // Instagram-like progressive image loading
         };
       }
 
@@ -171,18 +176,16 @@ class MLFeedService {
   // Get comprehensive user profile for ML with optimization
   async getUserProfile(userId, userEmail) {
     const cacheKey = `user_profile_${userId}`;
-
-    // Try optimized cache first
-    let cached = this.feedOptimizer.getFromCache(cacheKey);
-    if (cached) return cached;
-
-    // Fallback to basic cache
-    cached = userProfileCache.get(cacheKey);
+    let cached =
+      this.feedOptimizer.getFromCache(cacheKey) ||
+      userProfileCache.get(cacheKey);
     if (cached) return cached;
 
     const [user, following, followers, recentLikes, recentComments] =
       await Promise.all([
-        User.findById(userId).select("interests level createdAt").lean(),
+        User.findById(userId)
+          .select("interests level createdAt profession education location")
+          .lean(),
         Follow.find({ "follower._id": userId })
           .select("following")
           .limit(200)
@@ -232,84 +235,87 @@ class MLFeedService {
         recentComments
       ),
       recentlySeenTypes: this.extractRecentTypes(recentLikes, recentComments),
+      professionalInterests: user?.profession
+        ? user.profession.toLowerCase().split(",")
+        : [],
+      location: user?.location || null,
     };
 
-    // Cache with optimization
     await this.feedOptimizer.cacheContent(cacheKey, profile, {
-      popularity: "warm",
+      popularity: "hot",
       priority: "high",
     });
     userProfileCache.set(cacheKey, profile);
-
     return profile;
   }
 
-  // Build interaction map for advanced ranking
+  // Enhanced interaction map with Instagram-like weighting
   buildInteractionMap(likes, comments) {
     const interactions = {};
-
-    [...likes, ...comments].forEach((activity) => {
-      interactions[activity.uid] = (interactions[activity.uid] || 0) + 1;
+    likes.forEach((activity) => {
+      interactions[activity.uid] =
+        (interactions[activity.uid] || 0) + this.engagementWeights.like;
     });
-
+    comments.forEach((activity) => {
+      interactions[activity.uid] =
+        (interactions[activity.uid] || 0) + this.engagementWeights.comment;
+    });
     return interactions;
   }
 
   // Extract content type preferences
   extractContentTypePreferences(likes, comments) {
     const typeCount = {};
-
     [...likes, ...comments].forEach((activity) => {
       typeCount[activity.type] = (typeCount[activity.type] || 0) + 1;
     });
-
     return Object.entries(typeCount)
       .sort(([, a], [, b]) => b - a)
       .slice(0, 3)
       .map(([type]) => type);
   }
 
-  // Calculate active hours
+  // Calculate active hours with Instagram-like activity patterns
   calculateActiveHours(likes, comments) {
     const hourlyActivity = new Array(24).fill(0);
-
     [...likes, ...comments].forEach((activity) => {
       const hour = new Date(activity.createdAt).getHours();
       hourlyActivity[hour]++;
     });
-
-    // Normalize to 0-1 scale
     const maxActivity = Math.max(...hourlyActivity);
     return hourlyActivity.map((count) =>
       maxActivity > 0 ? count / maxActivity : 0
     );
   }
 
-  // Extract recent authors
   extractRecentAuthors(likes, comments) {
-    return [];
+    // Fetch author IDs from recent interactions
+    return [
+      ...new Set([...likes, ...comments].map((activity) => activity.user?._id)),
+    ].slice(0, 20);
   }
 
-  // Extract recent content types
   extractRecentTypes(likes, comments) {
-    const recentTypes = [...likes, ...comments]
-      .slice(0, 20) // Last 20 interactions
-      .map((activity) => activity.type);
-
-    return [...new Set(recentTypes)];
+    return [
+      ...new Set(
+        [...likes, ...comments].slice(0, 20).map((activity) => activity.type)
+      ),
+    ];
   }
 
-  // Analyze user engagement patterns
+  // Analyze engagement pattern with Instagram-like metrics
   analyzeEngagementPattern(likes, comments) {
     const hourlyActivity = new Array(24).fill(0);
     const contentTypePreference = {};
+    const authorPreference = {};
 
     [...likes, ...comments].forEach((activity) => {
       const hour = new Date(activity.createdAt).getHours();
       hourlyActivity[hour]++;
-
       contentTypePreference[activity.type] =
         (contentTypePreference[activity.type] || 0) + 1;
+      authorPreference[activity.user?._id] =
+        (authorPreference[activity.user?._id] || 0) + 1;
     });
 
     return {
@@ -318,21 +324,22 @@ class MLFeedService {
         .sort(([, a], [, b]) => b - a)
         .slice(0, 3)
         .map(([type]) => type),
+      preferredAuthors: Object.entries(authorPreference)
+        .sort(([, a], [, b]) => b - a)
+        .slice(0, 5)
+        .map(([authorId]) => authorId),
     };
   }
 
-  // Get engagement metrics for content with optimization
+  // Get engagement metrics with Instagram-like metrics
   async getEngagementMetrics(contentIds) {
     const cacheKey = `engagement_${contentIds.join("_")}`;
-
-    // Try optimized cache first
-    let cached = this.feedOptimizer.getFromCache(cacheKey);
+    let cached =
+      this.feedOptimizer.getFromCache(cacheKey) ||
+      engagementCache.get(cacheKey);
     if (cached) return cached;
 
-    cached = engagementCache.get(cacheKey);
-    if (cached) return cached;
-
-    const [likes, comments, shares] = await Promise.all([
+    const [likes, comments, shares, views] = await Promise.all([
       Like.aggregate([
         { $match: { uid: { $in: contentIds } } },
         { $group: { _id: "$uid", count: { $sum: 1 } } },
@@ -350,6 +357,10 @@ class MLFeedService {
         },
         { $group: { _id: "$originalContent._id", count: { $sum: 1 } } },
       ]),
+      Content.aggregate([
+        { $match: { _id: { $in: contentIds } } },
+        { $group: { _id: "$_id", views: { $sum: "$views" } } },
+      ]),
     ]);
 
     const metrics = {};
@@ -358,83 +369,139 @@ class MLFeedService {
         likes: likes.find((l) => l._id === id)?.count || 0,
         comments: comments.find((c) => c._id === id)?.count || 0,
         shares: shares.find((s) => s._id === id)?.count || 0,
+        views: views.find((v) => v._id === id)?.views || 0,
       };
     });
 
-    // Cache with optimization
     await this.feedOptimizer.cacheContent(cacheKey, metrics, {
       popularity: "warm",
     });
     engagementCache.set(cacheKey, metrics);
-
     return metrics;
   }
 
-  // Enhanced ML-based content scoring using ContentRanking
+  // Enhanced ML-based content scoring with Instagram-like prioritization
   async calculateContentScore(content, userProfile, engagementMetrics) {
     const contentId = content._id.toString();
     const cacheKey = `ml_score_${contentId}_${userProfile.user._id}`;
-
-    // Try optimized cache first
-    let cached = this.feedOptimizer.getFromCache(cacheKey);
-    if (cached) return cached;
-
-    cached = mlScoreCache.get(cacheKey);
+    let cached =
+      this.feedOptimizer.getFromCache(cacheKey) || mlScoreCache.get(cacheKey);
     if (cached) return cached;
 
     this.performanceMetrics.mlCalculations++;
 
-    // Use ContentRanking algorithm for sophisticated scoring
-    const rankingResult = this.contentRanking.calculateContentRank(
+    const recencyScore = this.calculateRecencyScore(content.createdAt);
+    const engagementScore = this.calculateEngagementScore(engagementMetrics);
+    const relationshipScore = this.calculateRelationshipScore(
       content,
-      userProfile,
-      engagementMetrics[contentId] || {}
+      userProfile
     );
+    const preferenceScore = this.calculatePreferenceScore(content, userProfile);
 
-    const score = rankingResult.finalScore;
+    const score =
+      this.contentWeights.recency * recencyScore +
+      this.contentWeights.engagement * engagementScore +
+      this.contentWeights.relationship * relationshipScore +
+      this.contentWeights.userPreference * preferenceScore;
 
-    // Cache with optimization based on score
-    const popularity = score > 0.8 ? "hot" : score > 0.5 ? "warm" : "cold";
-    await this.feedOptimizer.cacheContent(cacheKey, score, {
-      popularity,
-      userEngagement: score,
+    const boostedScore = this.applyInstagramBoosts(score, content, userProfile);
+    await this.feedOptimizer.cacheContent(cacheKey, boostedScore, {
+      popularity:
+        boostedScore > 0.8 ? "hot" : boostedScore > 0.5 ? "warm" : "cold",
+      userEngagement: boostedScore,
       contentAge: Date.now() - new Date(content.createdAt).getTime(),
     });
-    mlScoreCache.set(cacheKey, score);
+    mlScoreCache.set(cacheKey, boostedScore);
+    return boostedScore;
+  }
 
-    return score;
+  // Instagram-like recency score
+  calculateRecencyScore(createdAt) {
+    const ageInHours =
+      (Date.now() - new Date(createdAt).getTime()) / (1000 * 60 * 60);
+    if (ageInHours < 2) return 1; // Maximum boost for posts < 2 hours
+    if (ageInHours < 24) return 0.8 - (ageInHours / 24) * 0.3; // Gradual decay
+    if (ageInHours < 48) return 0.5 - (ageInHours / 48) * 0.2;
+    return 0.3; // Baseline for older posts
+  }
+
+  // Instagram-like engagement score
+  calculateEngagementScore(metrics) {
+    const totalEngagement =
+      (metrics.likes || 0) * this.engagementWeights.like +
+      (metrics.comments || 0) * this.engagementWeights.comment +
+      (metrics.shares || 0) * this.engagementWeights.share +
+      (metrics.views || 0) * this.engagementWeights.view;
+
+    return Math.min(totalEngagement / 1000, 1); // Normalize to 0-1
+  }
+
+  // Instagram-like relationship score
+  calculateRelationshipScore(content, userProfile) {
+    if (userProfile.followingEmails.includes(content.author.email)) return 1;
+    if (userProfile.recentlySeenAuthors.includes(content.author._id))
+      return 0.7;
+    return 0.3; // Baseline for non-followed content
+  }
+
+  // Instagram-like preference score
+  calculatePreferenceScore(content, userProfile) {
+    let score = 0.3; // Baseline
+    if (userProfile.preferredContentTypes.includes(content.type)) score += 0.3;
+    if (
+      userProfile.professionalInterests.some((interest) =>
+        content.status?.toLowerCase().includes(interest)
+      )
+    )
+      score += 0.2;
+    if (
+      userProfile.location &&
+      content.status?.toLowerCase().includes(userProfile.location.toLowerCase())
+    )
+      score += 0.2;
+    return Math.min(score, 1);
+  }
+
+  // Instagram-like boosts (e.g., Stories, Live, Sponsored)
+  applyInstagramBoosts(score, content, userProfile) {
+    let boostedScore = score;
+    const ageInMinutes =
+      (Date.now() - new Date(content.createdAt).getTime()) / (1000 * 60);
+    if (
+      ageInMinutes < 120 &&
+      userProfile.followingEmails.includes(content.author.email)
+    )
+      boostedScore += 0.3; // Boost followed users' new posts
+    if (content.views > 1000) boostedScore += 0.2; // Boost trending content
+    if (content.isShared) boostedScore += 0.1; // Slight boost for shared content
+    return Math.min(boostedScore, 1);
   }
 
   // Optimize content files for performance
   optimizeContentFiles(content, quality = "medium") {
     if (!content.files?.length) return content;
 
-    // Use FeedOptimizer for advanced optimization
     const optimizedFiles = this.optimizeFileUrls(content.files, quality);
-
     return {
       ...content,
       optimizedFiles,
-      files: optimizedFiles.map((f) => f.url || f.hls || f.original), // Maintain compatibility
+      files: optimizedFiles.map((f) => f.url || f.hls || f.original),
       contentType: this.determineContentType(content.files),
+      isSponsored: false, // Placeholder for future ad integration
     };
   }
 
-  // Determine content type based on files
+  // Determine content type
   determineContentType(files) {
-    if (!files || !Array.isArray(files) || files.length === 0) {
-      return "text";
-    }
-
-    const hasVideo = this.hasVideoFiles(files);
-    const hasImage = this.hasImageFiles(files);
-
-    if (hasVideo) return "video";
-    if (hasImage) return "image";
-    return "text";
+    if (!files || !Array.isArray(files) || files.length === 0) return "text";
+    return this.hasVideoFiles(files)
+      ? "video"
+      : this.hasImageFiles(files)
+      ? "image"
+      : "text";
   }
 
-  // Fetch optimized content based on ML strategy (Content model only) - ENHANCED WITH EXCLUSIONS
+  // Fetch optimized content with Instagram-like diversity
   async fetchOptimizedContent(
     filters,
     userProfile,
@@ -446,12 +513,10 @@ class MLFeedService {
       excludeIds = [],
       refreshStrategy = null,
       forceRefresh = false,
-      lastContentId = null,
+      cursor = null,
     } = options;
 
-    const fetchLimit = Math.min(limit * 3, 150); // Fetch more for better ML selection
-
-    // Add exclusion filters
+    const fetchLimit = Math.min(limit * 3, 150);
     if (excludeIds.length > 0) {
       filters._id = {
         ...filters._id,
@@ -461,17 +526,12 @@ class MLFeedService {
       };
     }
 
-    // Add cursor-based pagination
-    if (lastContentId) {
-      filters._id = {
-        ...filters._id,
-        $lt: lastContentId,
-      };
+    if (cursor) {
+      filters._id = { ...filters._id, $lt: cursor };
     }
 
-    // Add content type filtering - FIXED TO PROPERLY EXCLUDE VIDEOS
+    // Instagram-like content type filtering
     if (contentType === "video") {
-      // Filter for content with video files
       filters.$expr = {
         $gt: [
           {
@@ -491,7 +551,6 @@ class MLFeedService {
         ],
       };
     } else if (contentType === "text") {
-      // Filter for content WITHOUT video files (text/image only)
       filters.$expr = {
         $eq: [
           {
@@ -512,43 +571,53 @@ class MLFeedService {
       };
     }
 
-    // Apply refresh strategy for different sorting
-    let sortStrategy = { _id: -1 }; // Default: newest first
-
+    let sortStrategy = { createdAt: -1, views: -1 }; // Instagram-like default sort
     if (refreshStrategy) {
       sortStrategy = refreshStrategy.sort;
     } else if (forceRefresh) {
-      // Use random sorting strategies for refresh
-      const strategies = [
-        { _id: -1 }, // Newest first
-        { views: -1, createdAt: -1 }, // Most viewed first
-        { _id: 1 }, // Oldest first (for variety)
-      ];
-      sortStrategy = strategies[Math.floor(Math.random() * strategies.length)];
+      sortStrategy = [
+        { createdAt: -1, views: -1 },
+        { engagementScore: -1 },
+        { _id: -1 },
+      ][Math.floor(Math.random() * 3)];
     }
 
-    // Prioritize followed users content with different ratios for refresh
-    const followedRatio = forceRefresh ? Math.random() * 0.8 + 0.2 : 0.6; // 20-100% for refresh, 60% normally
+    // Instagram-like content mix: 60% followed, 30% discovery, 10% trending
+    const followedRatio = 0.6;
+    const discoveryRatio = 0.3;
+    const trendingRatio = 0.1;
 
-    const followedContent = await Content.find({
-      ...filters,
-      "author.email": { $in: userProfile.followingEmails.slice(0, 100) },
-    })
-      .sort(sortStrategy)
-      .limit(Math.ceil(fetchLimit * followedRatio))
-      .lean();
-
-    // Get discovery content
-    const discoveryContent = await Content.find({
-      ...filters,
-      "author.email": { $nin: userProfile.followingEmails },
-    })
-      .sort(sortStrategy)
-      .limit(Math.ceil(fetchLimit * (1 - followedRatio)))
-      .lean();
+    const [followedContent, discoveryContent, trendingContent] =
+      await Promise.all([
+        Content.find({
+          ...filters,
+          "author.email": { $in: userProfile.followingEmails.slice(0, 100) },
+        })
+          .sort(sortStrategy)
+          .limit(Math.ceil(fetchLimit * followedRatio))
+          .lean(),
+        Content.find({
+          ...filters,
+          "author.email": { $nin: userProfile.followingEmails },
+        })
+          .sort({ views: -1, createdAt: -1 })
+          .limit(Math.ceil(fetchLimit * discoveryRatio))
+          .lean(),
+        Content.find({
+          ...filters,
+          views: { $gt: 1000 }, // Trending threshold
+        })
+          .sort({ views: -1, createdAt: -1 })
+          .limit(Math.ceil(fetchLimit * trendingRatio))
+          .lean(),
+      ]);
 
     // Combine and deduplicate
-    const combined = [...followedContent, ...discoveryContent];
+    const combined = [
+      ...followedContent,
+      ...discoveryContent,
+      ...trendingContent,
+    ];
     const seen = new Set();
     const deduplicated = combined.filter((item) => {
       const id = item._id.toString();
@@ -557,15 +626,11 @@ class MLFeedService {
       return true;
     });
 
-    // Add randomization for refresh
-    if (forceRefresh) {
-      return this.shuffleArray(deduplicated);
-    }
-
-    return deduplicated;
+    // Instagram-like randomization for refresh
+    return forceRefresh ? this.shuffleArray(deduplicated) : deduplicated;
   }
 
-  // Fisher-Yates shuffle algorithm
+  // Fisher-Yates shuffle
   shuffleArray(array) {
     const shuffled = [...array];
     for (let i = shuffled.length - 1; i > 0; i--) {
@@ -593,81 +658,66 @@ class MLFeedService {
       ...optimized,
       mlScore: score,
       priority: this.calculatePriority(content, userProfile),
+      isSponsored: false, // Placeholder for future ad integration
     };
   }
 
-  // Calculate content priority (new posts get boost)
+  // Calculate content priority with Instagram-like boosts
   calculatePriority(content, userProfile) {
     const ageInMinutes =
       (Date.now() - new Date(content.createdAt).getTime()) / (1000 * 60);
-
-    // New content boost (first 2 hours)
-    if (ageInMinutes < 120) return 0.3;
-
-    // Following's new content boost (first 6 hours)
+    if (ageInMinutes < 60) return 0.5; // High priority for posts < 1 hour
     if (
-      ageInMinutes < 360 &&
+      ageInMinutes < 120 &&
       userProfile.followingEmails.includes(content.author.email)
-    ) {
-      return 0.2;
-    }
-
-    return 0;
+    )
+      return 0.4;
+    if (content.views > 1000) return 0.3; // Boost trending content
+    return 0.2; // Default priority
   }
 
-  // Main feed generation method with full optimization (Content model only) - ENHANCED
-  async generatePersonalizedFeed(userId, userEmail, options = {}) {
+  // Main Instagram-like feed generation
+  async generateInstagramFeed(userId, userEmail, options = {}) {
     const startTime = Date.now();
     this.performanceMetrics.totalRequests++;
 
     const {
-      page = 0,
-      limit = 50,
-      lastContentId = null,
-      quality = "medium",
-      contentType = "all", // 'all', 'video', 'text', 'image'
-      trending = false,
-      since = null,
+      cursor = null,
+      limit = 20,
+      contentType = "all",
       excludeIds = [],
-      refreshStrategy = null,
+      quality = "medium",
       forceRefresh = false,
     } = options;
 
     try {
-      // Preload critical content in background
+      const seenContent = this.getSeenContent(userId);
+      const allExcludedIds = [...excludeIds, ...Array.from(seenContent)];
+
       const userProfile = await this.getUserProfile(userId, userEmail);
 
-      // Start preloading for next request (skip if refreshing)
+      // Preload next batch
       if (!forceRefresh) {
         this.feedOptimizer.preloadCriticalContent(userId, userProfile, {
-          preloadCount: limit,
+          preloadCount: limit * 2,
           priority: "high",
         });
       }
 
-      // Build base filters
-      const baseFilters = {};
-      if (trending && since) baseFilters.createdAt = { $gte: since };
-
-      // Fetch content with optimization (Content model only) - with exclusions
+      // Fetch content
       const content = await this.fetchOptimizedContent(
-        baseFilters,
+        {},
         userProfile,
         limit,
         contentType,
-        {
-          excludeIds,
-          refreshStrategy,
-          forceRefresh,
-          lastContentId,
-        }
+        { excludeIds: allExcludedIds, cursor, forceRefresh }
       );
 
       // Get engagement metrics
       const contentIds = content.map((c) => c._id.toString());
       const engagementMetrics = await this.getEngagementMetrics(contentIds);
 
-      // Calculate ML scores and sort using batch processing
+      // Score and optimize
       const scoredContent = await this.feedOptimizer.batchProcessContent(
         content,
         async (item) =>
@@ -680,32 +730,35 @@ class MLFeedService {
         { priority: "high" }
       );
 
-      // Sort by ML score (with some randomization for refresh)
-      let sortedContent;
+      // Instagram-like sorting with randomization
+      let sortedContent = scoredContent.sort(
+        (a, b) => b.mlScore + b.priority - (a.mlScore + a.priority)
+      );
       if (forceRefresh) {
-        // Add randomization to scoring for refresh
-        sortedContent = scoredContent
-          .map((item) => ({
-            ...item,
-            randomizedScore: item.mlScore + (Math.random() * 0.3 - 0.15), // ±0.15 randomization
-          }))
-          .sort((a, b) => b.randomizedScore - a.randomizedScore);
-      } else {
-        sortedContent = scoredContent.sort((a, b) => b.mlScore - a.mlScore);
+        sortedContent = this.shuffleArray(sortedContent).map((item) => ({
+          ...item,
+          mlScore: item.mlScore + (Math.random() * 0.2 - 0.1), // ±0.1 randomization
+        }));
       }
 
-      // Enrich with user interaction data
+      // Enrich with user interactions
       const enrichedFeed = await this.enrichWithUserData(
         sortedContent,
         userEmail
       );
 
+      // Track seen content
+      const newContentIds = enrichedFeed.map((item) => item._id.toString());
+      this.trackSeenContent(userId, newContentIds);
+
       // Update performance metrics
       const responseTime = Date.now() - startTime;
       this.performanceMetrics.averageResponseTime =
-        (this.performanceMetrics.averageResponseTime + responseTime) / 2;
+        (this.performanceMetrics.averageResponseTime *
+          this.performanceMetrics.totalRequests +
+          responseTime) /
+        (this.performanceMetrics.totalRequests + 1);
 
-      // Determine if there's more content
       const hasMore = enrichedFeed.length >= limit;
       const finalFeed = enrichedFeed.slice(0, limit);
 
@@ -716,39 +769,68 @@ class MLFeedService {
           hasMore,
           nextCursor:
             finalFeed.length > 0 ? finalFeed[finalFeed.length - 1]._id : null,
-          mlMetrics: {
+          metrics: {
             totalProcessed: contentIds.length,
             cacheHitRate: this.calculateCacheHitRate(),
             diversityScore: this.calculateDiversityScore(finalFeed),
             responseTime,
             optimizationLevel: this.assessOptimizationLevel(),
-            excludedCount: excludeIds.length,
-            refreshStrategy:
-              refreshStrategy?.strategy || (forceRefresh ? "random" : "normal"),
+            excludedCount: allExcludedIds.length,
+            refreshStrategy: forceRefresh ? "random" : "instagram-like",
           },
         },
       };
     } catch (error) {
-      console.error("ML Feed Generation Error:", error);
+      console.error("Instagram Feed Generation Error:", error);
       throw error;
     }
   }
 
-  // Enrich content with user interaction data
+  // Refresh feed with Instagram-like strategy
+  async refreshFeedStrategy(userId, userEmail, contentType = "all") {
+    try {
+      // Clear relevant caches
+      this.clearCaches();
+
+      // Randomize sorting for fresh content
+      const refreshStrategy = {
+        strategy: "random-exploration",
+        sort: { createdAt: -1, views: -1, _id: -1 },
+      };
+
+      const result = await this.generateInstagramFeed(userId, userEmail, {
+        limit: 50,
+        contentType,
+        forceRefresh: true,
+        refreshStrategy,
+      });
+
+      return {
+        success: true,
+        data: {
+          feed: result.data.feed,
+          hasMore: result.data.hasMore,
+          nextCursor: result.data.nextCursor,
+          metrics: {
+            ...result.data.metrics,
+            refreshStrategy: "instagram-like-exploration",
+          },
+        },
+      };
+    } catch (error) {
+      console.error("RefreshFeedStrategy error:", error);
+      throw error;
+    }
+  }
+
+  // Enrich with user data
   async enrichWithUserData(content, userEmail) {
     const contentIds = content.map((c) => c._id.toString());
-
     const [userLikes, userComments] = await Promise.all([
-      Like.find({
-        uid: { $in: contentIds },
-        "user.email": userEmail,
-      })
+      Like.find({ uid: { $in: contentIds }, "user.email": userEmail })
         .select("uid")
         .lean(),
-      Comment.find({
-        uid: { $in: contentIds },
-        "user.email": userEmail,
-      })
+      Comment.find({ uid: { $in: contentIds }, "user.email": userEmail })
         .select("uid")
         .lean(),
     ]);
@@ -762,18 +844,16 @@ class MLFeedService {
         liked: likedSet.has(item._id.toString()),
         commented: commentedSet.has(item._id.toString()),
       },
-      loadPriority: item.mlScore > 0.7 ? "high" : "normal",
+      loadPriority:
+        item.mlScore > 0.7 ? "high" : item.mlScore > 0.4 ? "normal" : "low",
     }));
   }
 
-  // Calculate cache hit rate for monitoring
+  // Calculate cache hit rate
   calculateCacheHitRate() {
     const feedStats = feedCache.getStats();
     const optimizerRate = this.feedOptimizer.calculateOverallHitRate();
-
     const basicRate = feedStats.hits / (feedStats.hits + feedStats.misses) || 0;
-
-    // Combine both cache systems
     return (basicRate + optimizerRate) / 2;
   }
 
@@ -781,7 +861,7 @@ class MLFeedService {
   calculateDiversityScore(feed) {
     const authors = new Set(feed.map((item) => item.author.email));
     const types = new Set(feed.map((item) => item.contentType || "text"));
-    return (authors.size / feed.length) * (types.size / 3); // Normalize by max expected types (text, image, video)
+    return (authors.size / Math.max(feed.length, 1)) * (types.size / 3);
   }
 
   // Assess optimization level
@@ -801,17 +881,15 @@ class MLFeedService {
     };
   }
 
-  // Calculate overall optimization score
   calculateOverallOptimizationScore(optimizerMetrics, rankingMetrics) {
     const cacheScore = optimizerMetrics.cacheEfficiency * 0.4;
     const rankingScore = rankingMetrics.efficiency * 0.3;
     const memoryScore =
-      (optimizerMetrics.memory.efficiency.hitRate > 0.7 ? 1 : 0.5) * 0.3;
-
+      optimizerMetrics.memory.efficiency.hitRate > 0.7 ? 1 : 0.5 * 0.3;
     return cacheScore + rankingScore + memoryScore;
   }
 
-  // Get comprehensive performance metrics
+  // Get performance metrics
   getPerformanceMetrics() {
     return {
       mlService: this.performanceMetrics,
@@ -822,57 +900,45 @@ class MLFeedService {
         userProfile: userProfileCache.getStats(),
         engagement: engagementCache.getStats(),
         mlScore: mlScoreCache.getStats(),
+        seenContent: seenContentCache.getStats(),
       },
       memoryUsage: process.memoryUsage(),
       systemHealth: this.feedOptimizer.assessSystemHealth(),
     };
   }
 
-  // Clear caches (for testing/admin)
+  // Clear all caches
   clearCaches() {
     feedCache.flushAll();
     userProfileCache.flushAll();
     engagementCache.flushAll();
     mlScoreCache.flushAll();
-
-    // Also clear optimizer caches
+    seenContentCache.flushAll();
     this.feedOptimizer.optimizeMemoryUsage(true);
   }
 
-  // Memory optimization with integrated approach
+  // Memory optimization
   optimizeMemoryUsage() {
     const usage = process.memoryUsage();
     const heapUsedMB = usage.heapUsed / 1024 / 1024;
-
-    // Use FeedOptimizer for intelligent cleanup
     const optimized = this.feedOptimizer.optimizeMemoryUsage();
 
-    // Additional ML-specific cleanup
     if (heapUsedMB > 500) {
       mlScoreCache.flushAll();
       console.log("Cleared ML score cache due to high memory usage");
     }
-
     if (heapUsedMB > 750) {
       engagementCache.flushAll();
       console.log("Cleared engagement cache due to high memory usage");
     }
-
     if (optimized) {
       this.performanceMetrics.optimizationEvents++;
       this.performanceMetrics.lastOptimization = new Date();
     }
-
     return optimized;
   }
 }
 
-// Export singleton instance
 const mlFeedService = new MLFeedService();
-
-// Auto-optimize memory every 30 minutes
-setInterval(() => {
-  mlFeedService.optimizeMemoryUsage();
-}, 30 * 60 * 1000);
-
+setInterval(() => mlFeedService.optimizeMemoryUsage(), 30 * 60 * 1000);
 module.exports = mlFeedService;

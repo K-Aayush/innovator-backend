@@ -17,6 +17,8 @@ const {
   GetTrendingFeed,
   RefreshFeed,
   GetFeedAnalytics,
+  ClearSeenContent,
+  GetSeenContentStats,
 } = require("./content.ml-list.js");
 
 const router = require("express").Router();
@@ -44,8 +46,8 @@ router.get("/content/:id/views", basicMiddleware, GetViewCount);
 // delete whole contents
 router.delete("/delete-content/:id", basicMiddleware, DeleteContent);
 
-// NEW ML-POWERED FEED ROUTES (Content model only)
-// Main personalized feed (Instagram-like with mixed content including videos)
+
+// Main personalized feed 
 router.get("/feed", basicMiddleware, GetPersonalizedFeed);
 
 // Video-only feed (for video tab/page) - filters content with video files
@@ -57,11 +59,15 @@ router.get("/feed/content", basicMiddleware, GetContentFeed);
 // Trending feed
 router.get("/feed/trending", basicMiddleware, GetTrendingFeed);
 
-// Refresh feed
+// Refresh feed - ENHANCED
 router.post("/feed/refresh", basicMiddleware, RefreshFeed);
 
 // Feed analytics (admin only)
 router.get("/feed/analytics", basicMiddleware, GetFeedAnalytics);
+
+//  Seen content management
+router.post("/feed/clear-seen", basicMiddleware, ClearSeenContent);
+router.get("/feed/seen-stats", basicMiddleware, GetSeenContentStats);
 
 // LEGACY ROUTES (kept for backward compatibility)
 // get data - optimized with content type filtering

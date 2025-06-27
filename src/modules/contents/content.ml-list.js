@@ -3,6 +3,32 @@ const GenRes = require("../../utils/routers/GenRes");
 const { isValidObjectId } = require("mongoose");
 const Like = require("../likes/likes.model");
 const Comment = require("../comments/comments.model");
+const Content = require("./contents.model");
+const NodeCache = require("node-cache");
+
+// Cache for tracking user's seen content to prevent duplicates
+const userSeenContentCache = new NodeCache({ stdTTL: 3600 }); // 1 hour
+
+// Helper function to track seen content
+const trackSeenContent = (userId, contentIds) => {
+  const key = `seen_${userId}`;
+  const existing = userSeenContentCache.get(key) || new Set();
+  contentIds.forEach((id) => existing.add(id.toString()));
+  userSeenContentCache.set(key, existing);
+  return existing;
+};
+
+// Helper function to get seen content
+const getSeenContent = (userId) => {
+  const key = `seen_${userId}`;
+  return userSeenContentCache.get(key) || new Set();
+};
+
+// Helper function to clear seen content (for refresh)
+const clearSeenContent = (userId) => {
+  const key = `seen_${userId}`;
+  userSeenContentCache.del(key);
+};
 
 // Get personalized ML-powered feed (content only - including videos)
 const GetPersonalizedFeed = async (req, res) => {
@@ -13,6 +39,7 @@ const GetPersonalizedFeed = async (req, res) => {
       lastContentId,
       quality = "medium",
       contentType = "all", // 'all', 'text', 'video', 'image'
+      excludeIds = "", // Comma-separated list of content IDs to exclude
     } = req.query;
 
     const user = req.user;
@@ -33,12 +60,23 @@ const GetPersonalizedFeed = async (req, res) => {
         );
     }
 
+    // Parse excluded IDs
+    const excludedIds = excludeIds
+      ? excludeIds.split(",").filter((id) => isValidObjectId(id))
+      : [];
+
+    // Get user's seen content to prevent duplicates
+    const seenContent = getSeenContent(user._id);
+    const allExcludedIds = [...excludedIds, ...Array.from(seenContent)];
+
     const options = {
       page: pageNum,
       limit: limitNum,
       lastContentId,
       quality,
       contentType,
+      excludeIds: allExcludedIds,
+      userId: user._id,
     };
 
     const result = await MLFeedService.generatePersonalizedFeed(
@@ -83,18 +121,23 @@ const GetPersonalizedFeed = async (req, res) => {
         liked: userLikesSet.has(item._id.toString()),
         engagementLoaded: true,
       }));
+
+      // Track seen content
+      trackSeenContent(user._id, contentIds);
     }
 
-    return res
-      .status(200)
-      .json(
-        GenRes(
-          200,
-          result.data,
-          null,
-          `Generated personalized feed with ${result.data.feed.length} items`
-        )
-      );
+    return res.status(200).json(
+      GenRes(
+        200,
+        {
+          ...result.data,
+          seenContentCount: seenContent.size,
+          excludedCount: allExcludedIds.length,
+        },
+        null,
+        `Generated personalized feed with ${result.data.feed.length} items`
+      )
+    );
   } catch (error) {
     console.error("GetPersonalizedFeed error:", error);
     return res.status(500).json(GenRes(500, null, error, error?.message));
@@ -109,6 +152,7 @@ const GetVideoFeed = async (req, res) => {
       limit = 20,
       lastContentId,
       quality = "medium",
+      excludeIds = "",
     } = req.query;
 
     const user = req.user;
@@ -128,12 +172,21 @@ const GetVideoFeed = async (req, res) => {
         );
     }
 
+    // Parse excluded IDs and get seen content
+    const excludedIds = excludeIds
+      ? excludeIds.split(",").filter((id) => isValidObjectId(id))
+      : [];
+    const seenContent = getSeenContent(user._id);
+    const allExcludedIds = [...excludedIds, ...Array.from(seenContent)];
+
     const options = {
       page: pageNum,
       limit: limitNum,
       lastContentId,
       quality,
       contentType: "video", // Only video content
+      excludeIds: allExcludedIds,
+      userId: user._id,
     };
 
     const result = await MLFeedService.generatePersonalizedFeed(
@@ -177,6 +230,9 @@ const GetVideoFeed = async (req, res) => {
         liked: userLikesSet.has(item._id.toString()),
         engagementLoaded: true,
       }));
+
+      // Track seen content
+      trackSeenContent(user._id, contentIds);
     }
 
     return res.status(200).json(
@@ -187,6 +243,7 @@ const GetVideoFeed = async (req, res) => {
           hasMore: result.data.hasMore,
           nextCursor: result.data.nextCursor,
           mlMetrics: result.data.mlMetrics,
+          seenContentCount: seenContent.size,
         },
         null,
         `Generated video feed with ${result.data.feed.length} videos`
@@ -206,6 +263,7 @@ const GetContentFeed = async (req, res) => {
       limit = 30,
       lastContentId,
       quality = "medium",
+      excludeIds = "",
     } = req.query;
 
     const user = req.user;
@@ -225,12 +283,21 @@ const GetContentFeed = async (req, res) => {
         );
     }
 
+    // Parse excluded IDs and get seen content
+    const excludedIds = excludeIds
+      ? excludeIds.split(",").filter((id) => isValidObjectId(id))
+      : [];
+    const seenContent = getSeenContent(user._id);
+    const allExcludedIds = [...excludedIds, ...Array.from(seenContent)];
+
     const options = {
       page: pageNum,
       limit: limitNum,
       lastContentId,
       quality,
       contentType: "text", // Only text/image content (no videos)
+      excludeIds: allExcludedIds,
+      userId: user._id,
     };
 
     const result = await MLFeedService.generatePersonalizedFeed(
@@ -274,6 +341,9 @@ const GetContentFeed = async (req, res) => {
         liked: userLikesSet.has(item._id.toString()),
         engagementLoaded: true,
       }));
+
+      // Track seen content
+      trackSeenContent(user._id, contentIds);
     }
 
     return res.status(200).json(
@@ -284,6 +354,7 @@ const GetContentFeed = async (req, res) => {
           hasMore: result.data.hasMore,
           nextCursor: result.data.nextCursor,
           mlMetrics: result.data.mlMetrics,
+          seenContentCount: seenContent.size,
         },
         null,
         `Generated content feed with ${result.data.feed.length} items`
@@ -302,10 +373,19 @@ const GetTrendingFeed = async (req, res) => {
       timeframe = "24h",
       limit = 20,
       type = "all", // 'all', 'text', 'video'
+      excludeIds = "",
+      lastContentId,
     } = req.query;
 
     const user = req.user;
     const limitNum = Math.min(parseInt(limit, 10) || 20, 30);
+
+    // Parse excluded IDs and get seen content
+    const excludedIds = excludeIds
+      ? excludeIds.split(",").filter((id) => isValidObjectId(id))
+      : [];
+    const seenContent = getSeenContent(user._id);
+    const allExcludedIds = [...excludedIds, ...Array.from(seenContent)];
 
     // Calculate timeframe
     const timeframeHours = {
@@ -325,6 +405,9 @@ const GetTrendingFeed = async (req, res) => {
       contentType: type,
       trending: true,
       since,
+      excludeIds: allExcludedIds,
+      lastContentId,
+      userId: user._id,
     };
 
     const result = await MLFeedService.generatePersonalizedFeed(
@@ -379,6 +462,9 @@ const GetTrendingFeed = async (req, res) => {
         item.liked = userLikesSet.has(item._id.toString());
         item.engagementLoaded = true;
       });
+
+      // Track seen content
+      trackSeenContent(user._id, contentIds);
     }
 
     return res.status(200).json(
@@ -388,6 +474,12 @@ const GetTrendingFeed = async (req, res) => {
           trending: trendingItems,
           timeframe,
           totalItems: trendingItems.length,
+          hasMore: trendingItems.length >= limitNum,
+          nextCursor:
+            trendingItems.length > 0
+              ? trendingItems[trendingItems.length - 1]._id
+              : null,
+          seenContentCount: seenContent.size,
         },
         null,
         `Generated trending feed for ${timeframe}`
@@ -399,19 +491,39 @@ const GetTrendingFeed = async (req, res) => {
   }
 };
 
-// Refresh feed (clear cache and regenerate)
+// Refresh feed (clear cache and regenerate with different strategy)
 const RefreshFeed = async (req, res) => {
   try {
     const user = req.user;
+    const { contentType = "all", limit = 50 } = req.body;
 
-    // Clear user-specific caches
+    // Clear user-specific caches and seen content
     MLFeedService.clearCaches();
+    clearSeenContent(user._id);
 
-    // Generate fresh feed
+    // Use different sorting strategies for refresh to ensure variety
+    const refreshStrategies = [
+      { sort: { createdAt: -1 }, strategy: "recent" },
+      { sort: { views: -1, createdAt: -1 }, strategy: "popular" },
+      { sort: { _id: 1 }, strategy: "random" }, // Ascending ID for different order
+    ];
+
+    // Randomly select a strategy
+    const selectedStrategy =
+      refreshStrategies[Math.floor(Math.random() * refreshStrategies.length)];
+
+    // Generate fresh feed with different strategy
     const result = await MLFeedService.generatePersonalizedFeed(
       user._id,
       user.email,
-      { limit: 50, quality: "medium" }
+      {
+        limit: parseInt(limit) || 50,
+        quality: "medium",
+        contentType,
+        refreshStrategy: selectedStrategy,
+        forceRefresh: true,
+        userId: user._id,
+      }
     );
 
     // Enrich with engagement data
@@ -449,13 +561,63 @@ const RefreshFeed = async (req, res) => {
         liked: userLikesSet.has(item._id.toString()),
         engagementLoaded: true,
       }));
+
+      // Track new seen content
+      trackSeenContent(user._id, contentIds);
     }
+
+    return res.status(200).json(
+      GenRes(
+        200,
+        {
+          ...result.data,
+          refreshStrategy: selectedStrategy.strategy,
+          refreshedAt: new Date(),
+        },
+        null,
+        `Feed refreshed successfully with ${selectedStrategy.strategy} strategy`
+      )
+    );
+  } catch (error) {
+    console.error("RefreshFeed error:", error);
+    return res.status(500).json(GenRes(500, null, error, error?.message));
+  }
+};
+
+// Clear user's seen content history
+const ClearSeenContent = async (req, res) => {
+  try {
+    const user = req.user;
+    clearSeenContent(user._id);
 
     return res
       .status(200)
-      .json(GenRes(200, result.data, null, "Feed refreshed successfully"));
+      .json(GenRes(200, null, null, "Seen content history cleared"));
   } catch (error) {
-    console.error("RefreshFeed error:", error);
+    console.error("ClearSeenContent error:", error);
+    return res.status(500).json(GenRes(500, null, error, error?.message));
+  }
+};
+
+// Get user's seen content stats
+const GetSeenContentStats = async (req, res) => {
+  try {
+    const user = req.user;
+    const seenContent = getSeenContent(user._id);
+
+    return res.status(200).json(
+      GenRes(
+        200,
+        {
+          seenContentCount: seenContent.size,
+          seenContentIds: Array.from(seenContent).slice(0, 100), // Return first 100 for debugging
+        },
+        null,
+        "Seen content stats retrieved"
+      )
+    );
+  } catch (error) {
+    console.error("GetSeenContentStats error:", error);
     return res.status(500).json(GenRes(500, null, error, error?.message));
   }
 };
@@ -479,10 +641,19 @@ const GetFeedAnalytics = async (req, res) => {
         userProfileCache: MLFeedService.userProfileCache?.getStats() || {},
         engagementCache: MLFeedService.engagementCache?.getStats() || {},
         mlScoreCache: MLFeedService.mlScoreCache?.getStats() || {},
+        seenContentCache: userSeenContentCache.getStats(),
       },
       systemMetrics: {
         memoryUsage: process.memoryUsage(),
         uptime: process.uptime(),
+      },
+      userSeenContentStats: {
+        totalUsers: userSeenContentCache.keys().length,
+        averageSeenContent:
+          userSeenContentCache.keys().reduce((acc, key) => {
+            const seenContent = userSeenContentCache.get(key);
+            return acc + (seenContent ? seenContent.size : 0);
+          }, 0) / Math.max(userSeenContentCache.keys().length, 1),
       },
     };
 
@@ -502,4 +673,6 @@ module.exports = {
   GetTrendingFeed,
   RefreshFeed,
   GetFeedAnalytics,
+  ClearSeenContent,
+  GetSeenContentStats,
 };

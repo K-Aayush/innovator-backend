@@ -1,505 +1,382 @@
 const MLFeedService = require("../../services/mlFeedService");
 const GenRes = require("../../utils/routers/GenRes");
 const { isValidObjectId } = require("mongoose");
+const Content = require("./contents.model");
 const Like = require("../likes/likes.model");
 const Comment = require("../comments/comments.model");
+const NodeCache = require("node-cache");
 
-// Get personalized ML-powered feed (content only - including videos)
-const GetPersonalizedFeed = async (req, res) => {
+const feedSessionCache = new NodeCache({ stdTTL: 1800 }); // 30 minutes
+
+// Helper to track feed session
+const trackFeedSession = (userId, sessionData) => {
+  feedSessionCache.set(`session_${userId}`, {
+    ...sessionData,
+    lastActivity: new Date(),
+  });
+};
+
+// Helper to determine content type
+const determineContentType = (files) => {
+  if (!files || !Array.isArray(files) || files.length === 0) return "text";
+  const videoExtensions = [".mp4", ".mov", ".webm", ".avi", ".mkv", ".m3u8"];
+  const imageExtensions = [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"];
+  if (
+    files.some((file) =>
+      videoExtensions.some((ext) => file.toLowerCase().endsWith(ext))
+    )
+  ) {
+    return "video";
+  }
+  if (
+    files.some((file) =>
+      imageExtensions.some((ext) => file.toLowerCase().endsWith(ext))
+    )
+  ) {
+    return "image";
+  }
+  return "text";
+};
+
+// Main feed endpoint
+const GetFeed = async (req, res) => {
   try {
     const {
-      page = 0,
-      limit = 50,
-      lastContentId,
+      cursor = null,
+      limit = 20,
+      refresh = "false",
       quality = "medium",
-      contentType = "all", // 'all', 'text', 'video', 'image'
     } = req.query;
-
     const user = req.user;
-    const pageNum = parseInt(page, 10) || 0;
-    const limitNum = Math.min(parseInt(limit, 10) || 50, 50); // Max 50 items
+    const limitNum = Math.min(parseInt(limit, 10) || 20, 50);
+    const forceRefresh = refresh === "true";
 
-    // Validate cursor ID if provided
-    if (lastContentId && !isValidObjectId(lastContentId)) {
+    if (cursor && !isValidObjectId(cursor)) {
       return res
         .status(400)
         .json(
           GenRes(
             400,
             null,
-            { error: "Invalid lastContentId" },
-            "Invalid cursor"
+            { error: "Invalid cursor" },
+            "Invalid pagination cursor"
           )
         );
     }
 
-    const options = {
-      page: pageNum,
+    // Track session
+    trackFeedSession(user._id, {
+      requestTime: new Date(),
       limit: limitNum,
-      lastContentId,
+      refresh: forceRefresh,
       quality,
-      contentType,
-    };
+    });
 
-    const result = await MLFeedService.generatePersonalizedFeed(
+    // Clear caches and seen content on refresh
+    if (forceRefresh) {
+      MLFeedService.clearCaches();
+      MLFeedService.getSeenContent(user._id).clear();
+    }
+
+    // Fetch user profile for personalization
+    const userProfile = await MLFeedService.getUserProfile(
       user._id,
-      user.email,
-      options
+      user.email
     );
 
+    // Define filters for content
+    const filters = {
+      $and: [
+        {
+          _id: {
+            $nin: Array.from(MLFeedService.getSeenContent(user._id)).map(
+              (id) => new mongoose.Types.ObjectId(id)
+            ),
+          },
+        },
+        cursor ? { _id: { $lt: new mongoose.Types.ObjectId(cursor) } } : {},
+      ],
+    };
+
+    // Fetch content using Content model
+    const fetchLimit = limitNum * 2; // Fetch extra for splitting
+    const content = await Content.find(filters)
+      .sort({ createdAt: -1, views: -1 }) // Instagram-like default sort
+      .limit(fetchLimit)
+      .lean();
+
+    // Categorize into video and normal content
+    const videos = [];
+    const normal = [];
+    content.forEach((item) => {
+      const contentType = determineContentType(item.files);
+      item.contentType = contentType;
+      if (contentType === "video") {
+        videos.push(item);
+      } else {
+        normal.push(item);
+      }
+    });
+
+    // Get engagement metrics
+    const contentIds = content.map((c) => c._id.toString());
+    const engagementMetrics = await MLFeedService.getEngagementMetrics(
+      contentIds
+    );
+
+    // Score and optimize content
+    const scoredVideos = await Promise.all(
+      videos.map((item) =>
+        MLFeedService.scoreAndOptimizeContent(
+          item,
+          userProfile,
+          engagementMetrics[item._id.toString()] || {},
+          quality
+        )
+      )
+    );
+    const scoredNormal = await Promise.all(
+      normal.map((item) =>
+        MLFeedService.scoreAndOptimizeContent(
+          item,
+          userProfile,
+          engagementMetrics[item._id.toString()] || {},
+          quality
+        )
+      )
+    );
+
+    // Sort by ML score and priority (Instagram-like)
+    const sortedVideos = scoredVideos.sort(
+      (a, b) => b.mlScore + b.priority - (a.mlScore + a.priority)
+    );
+    const sortedNormal = scoredNormal.sort(
+      (a, b) => b.mlScore + b.priority - (a.mlScore + a.priority)
+    );
+
+    // Split into viewed and unviewed
+    const seenContent = MLFeedService.getSeenContent(user._id);
+    const videoArrays = {
+      unviewed: sortedVideos
+        .filter((item) => !seenContent.has(item._id.toString()))
+        .slice(0, Math.ceil(limitNum / 2)),
+      viewed: sortedVideos
+        .filter((item) => seenContent.has(item._id.toString()))
+        .slice(0, Math.floor(limitNum / 4)),
+    };
+    const normalArrays = {
+      unviewed: sortedNormal
+        .filter((item) => !seenContent.has(item._id.toString()))
+        .slice(0, Math.ceil(limitNum / 2)),
+      viewed: sortedNormal
+        .filter((item) => seenContent.has(item._id.toString()))
+        .slice(0, Math.floor(limitNum / 4)),
+    };
+
+    // Combine with priority to unviewed content
+    const finalVideos = [...videoArrays.unviewed, ...videoArrays.viewed].slice(
+      0,
+      Math.ceil(limitNum / 2)
+    );
+    const finalNormal = [
+      ...normalArrays.unviewed,
+      ...normalArrays.viewed,
+    ].slice(0, Math.ceil(limitNum / 2));
+
     // Enrich with engagement data
-    const contentIds = result.data.feed.map((item) => item._id.toString());
+    const enrichedVideos = await enrichWithEngagementData(
+      finalVideos,
+      user.email,
+      quality,
+      true
+    );
+    const enrichedNormal = await enrichWithEngagementData(
+      finalNormal,
+      user.email,
+      quality,
+      false
+    );
 
-    if (contentIds.length > 0) {
-      const [likesData, commentsData, userLikes] = await Promise.all([
-        Like.aggregate([
-          { $match: { uid: { $in: contentIds }, type: "content" } },
-          { $group: { _id: "$uid", count: { $sum: 1 } } },
-        ]),
-        Comment.aggregate([
-          { $match: { uid: { $in: contentIds }, type: "content" } },
-          { $group: { _id: "$uid", count: { $sum: 1 } } },
-        ]),
-        Like.find({
-          uid: { $in: contentIds },
-          type: "content",
-          "user.email": user.email,
-        })
-          .select("uid")
-          .lean(),
-      ]);
+    // Track seen content
+    const newContentIds = [...enrichedVideos, ...enrichedNormal].map((item) =>
+      item._id.toString()
+    );
+    MLFeedService.trackSeenContent(user._id, newContentIds);
 
-      const likesMap = new Map(likesData.map((item) => [item._id, item.count]));
-      const commentsMap = new Map(
-        commentsData.map((item) => [item._id, item.count])
+    // Randomize slightly on refresh
+    if (forceRefresh) {
+      const shuffle = (array) => {
+        const shuffled = [...array];
+        for (let i = shuffled.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+        }
+        return shuffled;
+      };
+      enrichedVideos = shuffle(
+        enrichedVideos.map((item) => ({
+          ...item,
+          mlScore: item.mlScore + (Math.random() * 0.2 - 0.1),
+        }))
       );
-      const userLikesSet = new Set(userLikes.map((like) => like.uid));
-
-      // Update feed items with engagement data
-      result.data.feed = result.data.feed.map((item) => ({
-        ...item,
-        likes: likesMap.get(item._id.toString()) || 0,
-        comments: commentsMap.get(item._id.toString()) || 0,
-        liked: userLikesSet.has(item._id.toString()),
-        engagementLoaded: true,
-      }));
+      enrichedNormal = shuffle(
+        enrichedNormal.map((item) => ({
+          ...item,
+          mlScore: item.mlScore + (Math.random() * 0.2 - 0.1),
+        }))
+      );
     }
+
+    // Prepare response
+    const response = {
+      videos: enrichedVideos.map((item, index) => ({
+        ...item,
+        feedPosition: index,
+        loadPriority:
+          item.mlScore > 0.7 ? "high" : item.mlScore > 0.4 ? "normal" : "low",
+      })),
+      normal: enrichedNormal.map((item, index) => ({
+        ...item,
+        feedPosition: index,
+        loadPriority:
+          item.mlScore > 0.7 ? "high" : item.mlScore > 0.4 ? "normal" : "low",
+        readTime:
+          item.contentType === "text" ? estimateReadTime(item.status) : null,
+      })),
+      hasMore: content.length >= limitNum,
+      nextCursor: content.length > 0 ? content[content.length - 1]._id : null,
+      algorithm: "instagram-like",
+      seenContentCount: seenContent.size + newContentIds.length,
+      metrics: {
+        totalProcessed: contentIds.length,
+        cacheHitRate: MLFeedService.calculateCacheHitRate(),
+        diversityScore: MLFeedService.calculateDiversityScore([
+          ...enrichedVideos,
+          ...enrichedNormal,
+        ]),
+        responseTime: Date.now() - req.startTime,
+        optimizationLevel: MLFeedService.assessOptimizationLevel(),
+        videoCount: enrichedVideos.length,
+        normalCount: enrichedNormal.length,
+        unviewedVideos: videoArrays.unviewed.length,
+        unviewedNormal: normalArrays.unviewed.length,
+      },
+      sessionInfo: {
+        totalLoaded: enrichedVideos.length + enrichedNormal.length,
+        refreshApplied: forceRefresh,
+        quality,
+      },
+    };
 
     return res
       .status(200)
       .json(
         GenRes(
           200,
-          result.data,
+          response,
           null,
-          `Generated personalized feed with ${result.data.feed.length} items`
+          `Loaded ${enrichedVideos.length} videos and ${enrichedNormal.length} normal items`
         )
       );
   } catch (error) {
-    console.error("GetPersonalizedFeed error:", error);
-    return res.status(500).json(GenRes(500, null, error, error?.message));
+    console.error("GetFeed error:", error);
+    return res.status(500).json(GenRes(500, null, error, error.message));
   }
 };
 
-// Get video-only feed (from content model)
-const GetVideoFeed = async (req, res) => {
-  try {
-    const {
-      page = 0,
-      limit = 20,
-      lastContentId,
-      quality = "medium",
-    } = req.query;
+// Enrich content with engagement data
+async function enrichWithEngagementData(content, userEmail, quality, isVideo) {
+  if (!content.length) return content;
 
-    const user = req.user;
-    const pageNum = parseInt(page, 10) || 0;
-    const limitNum = Math.min(parseInt(limit, 10) || 20, 30); // Max 30 videos
+  const contentIds = content.map((item) => item._id.toString());
+  const [likesData, commentsData, userLikes, userComments] = await Promise.all([
+    Like.aggregate([
+      { $match: { uid: { $in: contentIds }, type: "content" } },
+      { $group: { _id: "$uid", count: { $sum: 1 } } },
+    ]),
+    Comment.aggregate([
+      { $match: { uid: { $in: contentIds }, type: "content" } },
+      { $group: { _id: "$uid", count: { $sum: 1 } } },
+    ]),
+    Like.find({
+      uid: { $in: contentIds },
+      type: "content",
+      "user.email": userEmail,
+    })
+      .select("uid")
+      .lean(),
+    Comment.find({
+      uid: { $in: contentIds },
+      type: "content",
+      "user.email": userEmail,
+    })
+      .select("uid")
+      .lean(),
+  ]);
 
-    if (lastContentId && !isValidObjectId(lastContentId)) {
-      return res
-        .status(400)
-        .json(
-          GenRes(
-            400,
-            null,
-            { error: "Invalid lastContentId" },
-            "Invalid cursor"
-          )
-        );
-    }
+  const likesMap = new Map(likesData.map((item) => [item._id, item.count]));
+  const commentsMap = new Map(
+    commentsData.map((item) => [item._id, item.count])
+  );
+  const userLikesSet = new Set(userLikes.map((like) => like.uid));
+  const userCommentsSet = new Set(userComments.map((comment) => comment.uid));
 
-    const options = {
-      page: pageNum,
-      limit: limitNum,
-      lastContentId,
-      quality,
-      contentType: "video", // Only video content
+  return content.map((item) => {
+    const enrichedItem = {
+      ...item,
+      likes: likesMap.get(item._id.toString()) || 0,
+      comments: commentsMap.get(item._id.toString()) || 0,
+      liked: userLikesSet.has(item._id.toString()),
+      commented: userCommentsSet.has(item._id.toString()),
+      engagementRate: calculateEngagementRate(
+        likesMap.get(item._id.toString()) || 0,
+        commentsMap.get(item._id.toString()) || 0,
+        item.views || 0
+      ),
     };
 
-    const result = await MLFeedService.generatePersonalizedFeed(
-      user._id,
-      user.email,
-      options
-    );
-
-    // Enrich with engagement data
-    const contentIds = result.data.feed.map((item) => item._id.toString());
-
-    if (contentIds.length > 0) {
-      const [likesData, commentsData, userLikes] = await Promise.all([
-        Like.aggregate([
-          { $match: { uid: { $in: contentIds }, type: "content" } },
-          { $group: { _id: "$uid", count: { $sum: 1 } } },
-        ]),
-        Comment.aggregate([
-          { $match: { uid: { $in: contentIds }, type: "content" } },
-          { $group: { _id: "$uid", count: { $sum: 1 } } },
-        ]),
-        Like.find({
-          uid: { $in: contentIds },
-          type: "content",
-          "user.email": user.email,
-        })
-          .select("uid")
-          .lean(),
-      ]);
-
-      const likesMap = new Map(likesData.map((item) => [item._id, item.count]));
-      const commentsMap = new Map(
-        commentsData.map((item) => [item._id, item.count])
-      );
-      const userLikesSet = new Set(userLikes.map((like) => like.uid));
-
-      result.data.feed = result.data.feed.map((item) => ({
-        ...item,
-        likes: likesMap.get(item._id.toString()) || 0,
-        comments: commentsMap.get(item._id.toString()) || 0,
-        liked: userLikesSet.has(item._id.toString()),
-        engagementLoaded: true,
-      }));
-    }
-
-    return res.status(200).json(
-      GenRes(
-        200,
-        {
-          videos: result.data.feed,
-          hasMore: result.data.hasMore,
-          nextCursor: result.data.nextCursor,
-          mlMetrics: result.data.mlMetrics,
+    if (isVideo) {
+      return {
+        ...enrichedItem,
+        videoMetadata: {
+          quality,
+          autoplay: true,
+          preload: "auto",
+          muted: true,
+          loop: false,
+          controls: true,
         },
-        null,
-        `Generated video feed with ${result.data.feed.length} videos`
-      )
-    );
-  } catch (error) {
-    console.error("GetVideoFeed error:", error);
-    return res.status(500).json(GenRes(500, null, error, error?.message));
-  }
-};
-
-// Get content-only feed (no videos) - FIXED TO EXCLUDE VIDEOS
-const GetContentFeed = async (req, res) => {
-  try {
-    const {
-      page = 0,
-      limit = 30,
-      lastContentId,
-      quality = "medium",
-    } = req.query;
-
-    const user = req.user;
-    const pageNum = parseInt(page, 10) || 0;
-    const limitNum = Math.min(parseInt(limit, 10) || 30, 40);
-
-    if (lastContentId && !isValidObjectId(lastContentId)) {
-      return res
-        .status(400)
-        .json(
-          GenRes(
-            400,
-            null,
-            { error: "Invalid lastContentId" },
-            "Invalid cursor"
-          )
-        );
+        thumbnailUrl: generateThumbnail(item.files?.[0]),
+        hlsUrl: generateHLSUrl(item.files?.[0]),
+      };
     }
 
-    const options = {
-      page: pageNum,
-      limit: limitNum,
-      lastContentId,
-      quality,
-      contentType: "text", // Only text/image content (no videos)
-    };
+    return enrichedItem;
+  });
+}
 
-    const result = await MLFeedService.generatePersonalizedFeed(
-      user._id,
-      user.email,
-      options
-    );
+function calculateEngagementRate(likes, comments, views) {
+  if (views === 0) return 0;
+  return ((likes + comments * 2) / views) * 100;
+}
 
-    // Enrich with engagement data
-    const contentIds = result.data.feed.map((item) => item._id.toString());
+function estimateReadTime(text) {
+  if (!text) return 0;
+  const words = text.split(" ").length;
+  const wordsPerMinute = 200;
+  return Math.ceil(words / wordsPerMinute);
+}
 
-    if (contentIds.length > 0) {
-      const [likesData, commentsData, userLikes] = await Promise.all([
-        Like.aggregate([
-          { $match: { uid: { $in: contentIds }, type: "content" } },
-          { $group: { _id: "$uid", count: { $sum: 1 } } },
-        ]),
-        Comment.aggregate([
-          { $match: { uid: { $in: contentIds }, type: "content" } },
-          { $group: { _id: "$uid", count: { $sum: 1 } } },
-        ]),
-        Like.find({
-          uid: { $in: contentIds },
-          type: "content",
-          "user.email": user.email,
-        })
-          .select("uid")
-          .lean(),
-      ]);
+function generateThumbnail(fileUrl) {
+  if (!fileUrl) return null;
+  const basePath = fileUrl.replace(/\.[^/.]+$/, "");
+  return `${basePath}_thumbnail.jpg`;
+}
 
-      const likesMap = new Map(likesData.map((item) => [item._id, item.count]));
-      const commentsMap = new Map(
-        commentsData.map((item) => [item._id, item.count])
-      );
-      const userLikesSet = new Set(userLikes.map((like) => like.uid));
+function generateHLSUrl(fileUrl) {
+  if (!fileUrl) return null;
+  const basePath = fileUrl.replace(/\.[^/.]+$/, "");
+  return `${basePath}/playlist.m3u8`;
+}
 
-      result.data.feed = result.data.feed.map((item) => ({
-        ...item,
-        likes: likesMap.get(item._id.toString()) || 0,
-        comments: commentsMap.get(item._id.toString()) || 0,
-        liked: userLikesSet.has(item._id.toString()),
-        engagementLoaded: true,
-      }));
-    }
-
-    return res.status(200).json(
-      GenRes(
-        200,
-        {
-          content: result.data.feed,
-          hasMore: result.data.hasMore,
-          nextCursor: result.data.nextCursor,
-          mlMetrics: result.data.mlMetrics,
-        },
-        null,
-        `Generated content feed with ${result.data.feed.length} items`
-      )
-    );
-  } catch (error) {
-    console.error("GetContentFeed error:", error);
-    return res.status(500).json(GenRes(500, null, error, error?.message));
-  }
-};
-
-// Get trending content (high engagement)
-const GetTrendingFeed = async (req, res) => {
-  try {
-    const {
-      timeframe = "24h",
-      limit = 20,
-      type = "all", // 'all', 'text', 'video'
-    } = req.query;
-
-    const user = req.user;
-    const limitNum = Math.min(parseInt(limit, 10) || 20, 30);
-
-    // Calculate timeframe
-    const timeframeHours = {
-      "1h": 1,
-      "6h": 6,
-      "24h": 24,
-      "7d": 168,
-    };
-
-    const hours = timeframeHours[timeframe] || 24;
-    const since = new Date(Date.now() - hours * 60 * 60 * 1000);
-
-    const options = {
-      page: 0,
-      limit: limitNum * 2, // Fetch more for trending calculation
-      quality: "high",
-      contentType: type,
-      trending: true,
-      since,
-    };
-
-    const result = await MLFeedService.generatePersonalizedFeed(
-      user._id,
-      user.email,
-      options
-    );
-
-    // Filter and sort by engagement for trending
-    const trendingItems = result.data.feed
-      .filter((item) => new Date(item.createdAt) >= since)
-      .sort((a, b) => {
-        const scoreA =
-          (a.likes || 0) * 1 + (a.comments || 0) * 3 + (a.views || 0) * 0.1;
-        const scoreB =
-          (b.likes || 0) * 1 + (b.comments || 0) * 3 + (b.views || 0) * 0.1;
-        return scoreB - scoreA;
-      })
-      .slice(0, limitNum);
-
-    // Enrich with engagement data
-    const contentIds = trendingItems.map((item) => item._id.toString());
-
-    if (contentIds.length > 0) {
-      const [likesData, commentsData, userLikes] = await Promise.all([
-        Like.aggregate([
-          { $match: { uid: { $in: contentIds }, type: "content" } },
-          { $group: { _id: "$uid", count: { $sum: 1 } } },
-        ]),
-        Comment.aggregate([
-          { $match: { uid: { $in: contentIds }, type: "content" } },
-          { $group: { _id: "$uid", count: { $sum: 1 } } },
-        ]),
-        Like.find({
-          uid: { $in: contentIds },
-          type: "content",
-          "user.email": user.email,
-        })
-          .select("uid")
-          .lean(),
-      ]);
-
-      const likesMap = new Map(likesData.map((item) => [item._id, item.count]));
-      const commentsMap = new Map(
-        commentsData.map((item) => [item._id, item.count])
-      );
-      const userLikesSet = new Set(userLikes.map((like) => like.uid));
-
-      trendingItems.forEach((item) => {
-        item.likes = likesMap.get(item._id.toString()) || 0;
-        item.comments = commentsMap.get(item._id.toString()) || 0;
-        item.liked = userLikesSet.has(item._id.toString());
-        item.engagementLoaded = true;
-      });
-    }
-
-    return res.status(200).json(
-      GenRes(
-        200,
-        {
-          trending: trendingItems,
-          timeframe,
-          totalItems: trendingItems.length,
-        },
-        null,
-        `Generated trending feed for ${timeframe}`
-      )
-    );
-  } catch (error) {
-    console.error("GetTrendingFeed error:", error);
-    return res.status(500).json(GenRes(500, null, error, error?.message));
-  }
-};
-
-// Refresh feed (clear cache and regenerate)
-const RefreshFeed = async (req, res) => {
-  try {
-    const user = req.user;
-
-    // Clear user-specific caches
-    MLFeedService.clearCaches();
-
-    // Generate fresh feed
-    const result = await MLFeedService.generatePersonalizedFeed(
-      user._id,
-      user.email,
-      { limit: 50, quality: "medium" }
-    );
-
-    // Enrich with engagement data
-    const contentIds = result.data.feed.map((item) => item._id.toString());
-
-    if (contentIds.length > 0) {
-      const [likesData, commentsData, userLikes] = await Promise.all([
-        Like.aggregate([
-          { $match: { uid: { $in: contentIds }, type: "content" } },
-          { $group: { _id: "$uid", count: { $sum: 1 } } },
-        ]),
-        Comment.aggregate([
-          { $match: { uid: { $in: contentIds }, type: "content" } },
-          { $group: { _id: "$uid", count: { $sum: 1 } } },
-        ]),
-        Like.find({
-          uid: { $in: contentIds },
-          type: "content",
-          "user.email": user.email,
-        })
-          .select("uid")
-          .lean(),
-      ]);
-
-      const likesMap = new Map(likesData.map((item) => [item._id, item.count]));
-      const commentsMap = new Map(
-        commentsData.map((item) => [item._id, item.count])
-      );
-      const userLikesSet = new Set(userLikes.map((like) => like.uid));
-
-      result.data.feed = result.data.feed.map((item) => ({
-        ...item,
-        likes: likesMap.get(item._id.toString()) || 0,
-        comments: commentsMap.get(item._id.toString()) || 0,
-        liked: userLikesSet.has(item._id.toString()),
-        engagementLoaded: true,
-      }));
-    }
-
-    return res
-      .status(200)
-      .json(GenRes(200, result.data, null, "Feed refreshed successfully"));
-  } catch (error) {
-    console.error("RefreshFeed error:", error);
-    return res.status(500).json(GenRes(500, null, error, error?.message));
-  }
-};
-
-// Get feed analytics (for debugging/admin)
-const GetFeedAnalytics = async (req, res) => {
-  try {
-    const user = req.user;
-
-    if (user.role !== "admin") {
-      return res
-        .status(403)
-        .json(
-          GenRes(403, null, { error: "Admin access required" }, "Forbidden")
-        );
-    }
-
-    const analytics = {
-      cacheStats: {
-        feedCache: MLFeedService.feedCache?.getStats() || {},
-        userProfileCache: MLFeedService.userProfileCache?.getStats() || {},
-        engagementCache: MLFeedService.engagementCache?.getStats() || {},
-        mlScoreCache: MLFeedService.mlScoreCache?.getStats() || {},
-      },
-      systemMetrics: {
-        memoryUsage: process.memoryUsage(),
-        uptime: process.uptime(),
-      },
-    };
-
-    return res
-      .status(200)
-      .json(GenRes(200, analytics, null, "Feed analytics retrieved"));
-  } catch (error) {
-    console.error("GetFeedAnalytics error:", error);
-    return res.status(500).json(GenRes(500, null, error, error?.message));
-  }
-};
-
-module.exports = {
-  GetPersonalizedFeed,
-  GetVideoFeed,
-  GetContentFeed,
-  GetTrendingFeed,
-  RefreshFeed,
-  GetFeedAnalytics,
-};
+module.exports = { GetFeed };

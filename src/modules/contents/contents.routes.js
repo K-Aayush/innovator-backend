@@ -1,79 +1,150 @@
 const basicMiddleware = require("../../middlewares/basicMiddleware");
+const adminMiddleware = require("../../middlewares/adminMiddleware");
+const rateLimit = require("express-rate-limit");
 const UserFiles = require("../../utils/fileProcessor/multer.users.js");
 const { MultipleFiles, SingleFile, DeleteFiles } = require("./contents.files");
 const { ListContents, LoadEngagementData } = require("./contents.list.js");
-const { IncrementView, GetViewCount } = require("./content.incrementView.js");
+const {
+  IncrementView,
+  GetViewCount,
+  viewCountCache,
+} = require("./content.incrementView.js");
 const {
   AddContent,
   UpdateContents,
   DeleteContent,
 } = require("./contents.methods");
-
-// Import new ML-powered feed methods (Content model only)
-const {
-  GetPersonalizedFeed,
-  GetVideoFeed,
-  GetContentFeed,
-  GetTrendingFeed,
-  RefreshFeed,
-  GetFeedAnalytics,
-} = require("./content.ml-list.js");
+const { GetFeed } = require("./content.ml-list.js");
 
 const router = require("express").Router();
 
-// files
-// add multiple files
+// Rate limiter for feed and view requests
+const feedRateLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000, // 10 minutes
+  max: 50, // 50 feed requests per user
+  message: "Too many feed requests, please try again later",
+});
+
+const viewRateLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000, // 10 minutes
+  max: 100, // 100 view requests per user
+  message: "Too many view requests, please try again later",
+});
+
+// File uploads
 router.post("/add-files", basicMiddleware, UserFiles.any(), MultipleFiles);
-
-//single file | add or updateadd
 router.post("/add-file", basicMiddleware, UserFiles.single("file"), SingleFile);
-
-// delete files
 router.post("/delete-files", basicMiddleware, DeleteFiles);
 
-// post new data
+// Content management
 router.post("/new-content", basicMiddleware, AddContent);
+router.post(
+  "/update-contents/:id",
+  basicMiddleware,
+  async (req, res, next) => {
+    const { id } = req.params;
+    viewCountCache.del(`views_${id}`);
+    next();
+  },
+  UpdateContents
+);
+router.delete(
+  "/delete-content/:id",
+  basicMiddleware,
+  async (req, res, next) => {
+    const { id } = req.params;
+    viewCountCache.del(`views_${id}`);
+    next();
+  },
+  DeleteContent
+);
 
-// update data
-router.post("/update-contents/:id", basicMiddleware, UpdateContents);
-
-//update increment
-router.post("/content/:id/view", basicMiddleware, IncrementView);
+// View tracking
+router.post(
+  "/content/:id/view",
+  basicMiddleware,
+  viewRateLimiter,
+  IncrementView
+);
 router.get("/content/:id/views", basicMiddleware, GetViewCount);
 
-// delete whole contents
-router.delete("/delete-content/:id", basicMiddleware, DeleteContent);
+// Consolidated feed endpoint
+router.get(
+  "/feed",
+  basicMiddleware,
+  feedRateLimiter,
+  validateFeedParams,
+  (req, res, next) => {
+    req.startTime = Date.now(); 
+    next();
+  },
+  GetFeed
+);
 
-// NEW ML-POWERED FEED ROUTES (Content model only)
-// Main personalized feed (Instagram-like with mixed content including videos)
-router.get("/feed", basicMiddleware, GetPersonalizedFeed);
-
-// Video-only feed (for video tab/page) - filters content with video files
-router.get("/feed/videos", basicMiddleware, GetVideoFeed);
-
-// Content-only feed (for content tab/page) - filters content without video files
-router.get("/feed/content", basicMiddleware, GetContentFeed);
-
-// Trending feed
-router.get("/feed/trending", basicMiddleware, GetTrendingFeed);
-
-// Refresh feed
-router.post("/feed/refresh", basicMiddleware, RefreshFeed);
-
-// Feed analytics (admin only)
-router.get("/feed/analytics", basicMiddleware, GetFeedAnalytics);
-
-// LEGACY ROUTES (kept for backward compatibility)
-// get data - optimized with content type filtering
+// Legacy routes
 router.get("/list-contents", basicMiddleware, ListContents);
-
-// load engagement data on demand
 router.post("/load-engagement", basicMiddleware, LoadEngagementData);
 
-// admin
-router.get("/list-admin-contents/:page", basicMiddleware, ListContents);
+// Admin routes
+router.get(
+  "/list-admin-contents/:page",
+  basicMiddleware,
+  adminMiddleware,
+  ListContents
+);
+router.delete(
+  "/admin-delete-content/:id",
+  basicMiddleware,
+  adminMiddleware,
+  async (req, res, next) => {
+    const { id } = req.params;
+    viewCountCache.del(`views_${id}`);
+    next();
+  },
+  DeleteContent
+);
 
-// make delete
-router.delete("/admin-delete-content/:id", basicMiddleware, DeleteContent);
+// Validate feed parameters
+function validateFeedParams(req, res, next) {
+  const { limit, cursor, refresh, quality } = req.query;
+  const GenRes = require("../../utils/routers/GenRes");
+
+  if (limit && (isNaN(limit) || parseInt(limit) < 1 || parseInt(limit) > 50)) {
+    return res
+      .status(400)
+      .json(GenRes(400, null, null, "Invalid limit: must be between 1 and 50"));
+  }
+
+  if (cursor && !require("mongoose").Types.ObjectId.isValid(cursor)) {
+    return res
+      .status(400)
+      .json(
+        GenRes(400, null, null, "Invalid cursor: must be a valid ObjectId")
+      );
+  }
+
+  if (quality && !["low", "medium", "high", "auto"].includes(quality)) {
+    return res
+      .status(400)
+      .json(
+        GenRes(
+          400,
+          null,
+          null,
+          "Invalid quality: must be 'low', 'medium', 'high', or 'auto'"
+        )
+      );
+  }
+
+  if (refresh && !["true", "false"].includes(refresh)) {
+    return res
+      .status(400)
+      .json(
+        GenRes(400, null, null, "Invalid refresh: must be 'true' or 'false'")
+      );
+  }
+
+  next();
+}
 
 module.exports = router;

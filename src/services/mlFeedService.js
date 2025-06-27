@@ -434,14 +434,40 @@ class MLFeedService {
     return "text";
   }
 
-  // Fetch optimized content based on ML strategy (Content model only) - FIXED FILTERING
+  // Fetch optimized content based on ML strategy (Content model only) - ENHANCED WITH EXCLUSIONS
   async fetchOptimizedContent(
     filters,
     userProfile,
     limit,
-    contentType = "all"
+    contentType = "all",
+    options = {}
   ) {
+    const {
+      excludeIds = [],
+      refreshStrategy = null,
+      forceRefresh = false,
+      lastContentId = null,
+    } = options;
+
     const fetchLimit = Math.min(limit * 3, 150); // Fetch more for better ML selection
+
+    // Add exclusion filters
+    if (excludeIds.length > 0) {
+      filters._id = {
+        ...filters._id,
+        $nin: excludeIds.map((id) =>
+          typeof id === "string" ? id : id.toString()
+        ),
+      };
+    }
+
+    // Add cursor-based pagination
+    if (lastContentId) {
+      filters._id = {
+        ...filters._id,
+        $lt: lastContentId,
+      };
+    }
 
     // Add content type filtering - FIXED TO PROPERLY EXCLUDE VIDEOS
     if (contentType === "video") {
@@ -486,13 +512,30 @@ class MLFeedService {
       };
     }
 
-    // Prioritize followed users content
+    // Apply refresh strategy for different sorting
+    let sortStrategy = { _id: -1 }; // Default: newest first
+
+    if (refreshStrategy) {
+      sortStrategy = refreshStrategy.sort;
+    } else if (forceRefresh) {
+      // Use random sorting strategies for refresh
+      const strategies = [
+        { _id: -1 }, // Newest first
+        { views: -1, createdAt: -1 }, // Most viewed first
+        { _id: 1 }, // Oldest first (for variety)
+      ];
+      sortStrategy = strategies[Math.floor(Math.random() * strategies.length)];
+    }
+
+    // Prioritize followed users content with different ratios for refresh
+    const followedRatio = forceRefresh ? Math.random() * 0.8 + 0.2 : 0.6; // 20-100% for refresh, 60% normally
+
     const followedContent = await Content.find({
       ...filters,
       "author.email": { $in: userProfile.followingEmails.slice(0, 100) },
     })
-      .sort({ _id: -1 })
-      .limit(Math.ceil(fetchLimit * 0.6))
+      .sort(sortStrategy)
+      .limit(Math.ceil(fetchLimit * followedRatio))
       .lean();
 
     // Get discovery content
@@ -500,19 +543,36 @@ class MLFeedService {
       ...filters,
       "author.email": { $nin: userProfile.followingEmails },
     })
-      .sort({ _id: -1 })
-      .limit(Math.ceil(fetchLimit * 0.4))
+      .sort(sortStrategy)
+      .limit(Math.ceil(fetchLimit * (1 - followedRatio)))
       .lean();
 
     // Combine and deduplicate
     const combined = [...followedContent, ...discoveryContent];
     const seen = new Set();
-    return combined.filter((item) => {
+    const deduplicated = combined.filter((item) => {
       const id = item._id.toString();
       if (seen.has(id)) return false;
       seen.add(id);
       return true;
     });
+
+    // Add randomization for refresh
+    if (forceRefresh) {
+      return this.shuffleArray(deduplicated);
+    }
+
+    return deduplicated;
+  }
+
+  // Fisher-Yates shuffle algorithm
+  shuffleArray(array) {
+    const shuffled = [...array];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    return shuffled;
   }
 
   // Score and optimize content
@@ -555,7 +615,7 @@ class MLFeedService {
     return 0;
   }
 
-  // Main feed generation method with full optimization (Content model only)
+  // Main feed generation method with full optimization (Content model only) - ENHANCED
   async generatePersonalizedFeed(userId, userEmail, options = {}) {
     const startTime = Date.now();
     this.performanceMetrics.totalRequests++;
@@ -568,29 +628,39 @@ class MLFeedService {
       contentType = "all", // 'all', 'video', 'text', 'image'
       trending = false,
       since = null,
+      excludeIds = [],
+      refreshStrategy = null,
+      forceRefresh = false,
     } = options;
 
     try {
       // Preload critical content in background
       const userProfile = await this.getUserProfile(userId, userEmail);
 
-      // Start preloading for next request
-      this.feedOptimizer.preloadCriticalContent(userId, userProfile, {
-        preloadCount: limit,
-        priority: "high",
-      });
+      // Start preloading for next request (skip if refreshing)
+      if (!forceRefresh) {
+        this.feedOptimizer.preloadCriticalContent(userId, userProfile, {
+          preloadCount: limit,
+          priority: "high",
+        });
+      }
 
       // Build base filters
       const baseFilters = {};
-      if (lastContentId) baseFilters._id = { $lt: lastContentId };
       if (trending && since) baseFilters.createdAt = { $gte: since };
 
-      // Fetch content with optimization (Content model only)
+      // Fetch content with optimization (Content model only) - with exclusions
       const content = await this.fetchOptimizedContent(
         baseFilters,
         userProfile,
         limit,
-        contentType
+        contentType,
+        {
+          excludeIds,
+          refreshStrategy,
+          forceRefresh,
+          lastContentId,
+        }
       );
 
       // Get engagement metrics
@@ -610,8 +680,19 @@ class MLFeedService {
         { priority: "high" }
       );
 
-      // Sort by ML score
-      const sortedContent = scoredContent.sort((a, b) => b.mlScore - a.mlScore);
+      // Sort by ML score (with some randomization for refresh)
+      let sortedContent;
+      if (forceRefresh) {
+        // Add randomization to scoring for refresh
+        sortedContent = scoredContent
+          .map((item) => ({
+            ...item,
+            randomizedScore: item.mlScore + (Math.random() * 0.3 - 0.15), // ±0.15 randomization
+          }))
+          .sort((a, b) => b.randomizedScore - a.randomizedScore);
+      } else {
+        sortedContent = scoredContent.sort((a, b) => b.mlScore - a.mlScore);
+      }
 
       // Enrich with user interaction data
       const enrichedFeed = await this.enrichWithUserData(
@@ -624,21 +705,26 @@ class MLFeedService {
       this.performanceMetrics.averageResponseTime =
         (this.performanceMetrics.averageResponseTime + responseTime) / 2;
 
+      // Determine if there's more content
+      const hasMore = enrichedFeed.length >= limit;
+      const finalFeed = enrichedFeed.slice(0, limit);
+
       return {
         success: true,
         data: {
-          feed: enrichedFeed.slice(0, limit),
-          hasMore: enrichedFeed.length >= limit,
+          feed: finalFeed,
+          hasMore,
           nextCursor:
-            enrichedFeed.length > 0
-              ? enrichedFeed[enrichedFeed.length - 1]._id
-              : null,
+            finalFeed.length > 0 ? finalFeed[finalFeed.length - 1]._id : null,
           mlMetrics: {
             totalProcessed: contentIds.length,
             cacheHitRate: this.calculateCacheHitRate(),
-            diversityScore: this.calculateDiversityScore(enrichedFeed),
+            diversityScore: this.calculateDiversityScore(finalFeed),
             responseTime,
             optimizationLevel: this.assessOptimizationLevel(),
+            excludedCount: excludeIds.length,
+            refreshStrategy:
+              refreshStrategy?.strategy || (forceRefresh ? "random" : "normal"),
           },
         },
       };

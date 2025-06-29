@@ -22,6 +22,14 @@ const {
   GetUserSupport,
   GetUserContent,
 } = require("./user.methods");
+const {
+  BlockUser,
+  UnblockUser,
+  GetBlockedUsers,
+  CheckBlockStatus,
+  GetUsersWhoBlockedMe,
+  checkBlockStatus,
+} = require("./block.methods");
 const RegisterUser = require("./user.register");
 
 // get request
@@ -57,5 +65,12 @@ router.post("/report", basicMiddleware, SubmitReport);
 router.post("/support", basicMiddleware, SubmitSupport);
 router.get("/reports", basicMiddleware, GetUserReports);
 router.get("/support-tickets", basicMiddleware, GetUserSupport);
+
+// Blocking system routes
+router.post("/block-user", basicMiddleware, BlockUser);
+router.post("/unblock-user", basicMiddleware, UnblockUser);
+router.get("/blocked-users", basicMiddleware, GetBlockedUsers);
+router.get("/check-block-status", basicMiddleware, CheckBlockStatus);
+router.get("/users-who-blocked-me", basicMiddleware, GetUsersWhoBlockedMe);
 
 module.exports = router;

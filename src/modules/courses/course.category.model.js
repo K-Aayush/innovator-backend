@@ -1,59 +1,77 @@
-const { Schema, model, models } = require("mongoose");
+const { Schema, models, model } = require("mongoose");
 const ModelGenerator = require("../../utils/database/modelGenerator");
 
 const gen = new ModelGenerator();
 
-const CourseCategorySchema = new Schema(
+const CourseSchema = new Schema(
   {
-    name: gen.required(String),
-    description: String,
-    slug: gen.unique(String), 
-    icon: String, 
-    color: {
-      type: String,
-      default: "#4A90E2",
-    },
-    parentCategory: {
-      type: Schema.Types.ObjectId,
-      ref: "CourseCategory",
-      default: null,
-    },
-    subcategories: [
+    title: gen.required(String),
+    description: gen.required(String),
+    price: gen.required({
+      usd: gen.required(Number),
+      npr: gen.required(Number),
+    }),
+    thumbnail: gen.required(String),
+    notes: gen.required([
       {
-        type: Schema.Types.ObjectId,
-        ref: "CourseCategory",
+        name: gen.required(String),
+        pdf: gen.required(String), 
+        premium: gen.required(Boolean, { default: false }),
+        fileType: {
+          type: String,
+          enum: ["pdf", "video", "other"],
+          default: "pdf",
+        },
+        duration: String, 
+        fileSize: String,
+        description: String,
+        sortOrder: {
+          type: Number,
+          default: 0,
+        },
       },
-    ],
-    isActive: {
+    ]),
+    category: {
+      _id: gen.required(String),
+      name: gen.required(String),
+      slug: String,
+    },
+    author: gen.required({
+      email: gen.required(String),
+      _id: gen.required(String),
+      phone: gen.required(String),
+    }),
+    // Additional course metadata
+    level: {
+      type: String,
+      enum: ["beginner", "intermediate", "advanced"],
+      default: "beginner",
+    },
+    duration: String, 
+    language: {
+      type: String,
+      default: "English",
+    },
+    tags: [String],
+    prerequisites: [String],
+    learningOutcomes: [String],
+    isPublished: {
       type: Boolean,
       default: true,
     },
-    sortOrder: {
+    enrollmentCount: {
       type: Number,
       default: 0,
     },
-    metadata: {
-      totalCourses: {
+    rating: {
+      average: {
         type: Number,
         default: 0,
       },
-      totalPDFs: {
+      count: {
         type: Number,
         default: 0,
       },
-      totalVideos: {
-        type: Number,
-        default: 0,
-      },
-      lastUpdated: {
-        type: Date,
-        default: Date.now,
-      },
-    },
-    createdBy: {
-      _id: gen.required(String),
-      email: gen.required(String),
-      name: gen.required(String),
     },
   },
   {
@@ -63,28 +81,73 @@ const CourseCategorySchema = new Schema(
   }
 );
 
-// Virtual for full category path
-CourseCategorySchema.virtual("fullPath").get(function () {
-  // This would be populated when needed
-  return this.name;
+// Virtual for total content count
+CourseSchema.virtual("totalContent").get(function () {
+  return this.notes ? this.notes.length : 0;
 });
 
-// Pre-save middleware to generate slug
-CourseCategorySchema.pre("save", function (next) {
-  if (this.isModified("name")) {
-    this.slug = this.name
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/(^-|-$)/g, "");
+// Virtual for PDF count
+CourseSchema.virtual("pdfCount").get(function () {
+  return this.notes
+    ? this.notes.filter(
+        (note) => note.pdf && note.pdf.toLowerCase().endsWith(".pdf")
+      ).length
+    : 0;
+});
+
+// Virtual for video count
+CourseSchema.virtual("videoCount").get(function () {
+  const videoExtensions = [
+    ".mp4",
+    ".avi",
+    ".mov",
+    ".wmv",
+    ".flv",
+    ".webm",
+    ".mkv",
+  ];
+  return this.notes
+    ? this.notes.filter((note) => {
+        if (!note.pdf) return false;
+        const ext = require("path").extname(note.pdf).toLowerCase();
+        return videoExtensions.includes(ext);
+      }).length
+    : 0;
+});
+
+// Pre-save middleware to set file types
+CourseSchema.pre("save", function (next) {
+  if (this.notes && this.notes.length > 0) {
+    this.notes.forEach((note) => {
+      if (note.pdf) {
+        const ext = require("path").extname(note.pdf).toLowerCase();
+        const videoExtensions = [
+          ".mp4",
+          ".avi",
+          ".mov",
+          ".wmv",
+          ".flv",
+          ".webm",
+          ".mkv",
+        ];
+
+        if (note.pdf.toLowerCase().endsWith(".pdf")) {
+          note.fileType = "pdf";
+        } else if (videoExtensions.includes(ext)) {
+          note.fileType = "video";
+        } else {
+          note.fileType = "other";
+        }
+      }
+    });
   }
   next();
 });
 
 // Index for better performance
-CourseCategorySchema.index({ slug: 1 });
-CourseCategorySchema.index({ parentCategory: 1, sortOrder: 1 });
-CourseCategorySchema.index({ isActive: 1, sortOrder: 1 });
+CourseSchema.index({ "category._id": 1, isPublished: 1 });
+CourseSchema.index({ title: "text", description: "text" });
+CourseSchema.index({ level: 1, "category._id": 1 });
 
-const CourseCategory =
-  models?.CourseCategory || model("CourseCategory", CourseCategorySchema);
-module.exports = CourseCategory;
+const Courses = models?.Course || model("Course", CourseSchema);
+module.exports = Courses;

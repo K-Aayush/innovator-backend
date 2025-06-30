@@ -13,6 +13,11 @@ const {
   UpdateContents,
   DeleteContent,
 } = require("./contents.methods");
+const {
+  GetVideoContentReel,
+  GetVideoContentById,
+  ClearSeenVideoContent,
+} = require("./content.video-reels.js");
 const { GetFeed } = require("./content.ml-list.js");
 
 const router = require("express").Router();
@@ -57,6 +62,16 @@ router.delete(
   },
   DeleteContent
 );
+
+// Video reel feed endpoints
+router.get(
+  "/video-reel",
+  basicMiddleware,
+  feedRateLimiter,
+  GetVideoContentReel
+);
+router.get("/video-content/:id", basicMiddleware, GetVideoContentById);
+router.post("/clear-seen-videos", basicMiddleware, ClearSeenVideoContent);
 
 // View tracking
 router.post(

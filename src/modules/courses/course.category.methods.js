@@ -35,10 +35,14 @@ const CreateCourseCategory = async (req, res) => {
         );
     }
 
+    // Generate slug from name
+    const slug = name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/(^-|-$)/g, "");
+
     // Check if category with same name already exists
-    const existingCategory = await CourseCategory.findOne({
-      name: { $regex: new RegExp(`^${name}$`, "i") },
-    });
+    const existingCategory = await CourseCategory.findOne({ slug });
 
     if (existingCategory) {
       return res
@@ -90,6 +94,7 @@ const CreateCourseCategory = async (req, res) => {
       color: color || "#4A90E2",
       parentCategory: parentCategory || null,
       sortOrder: sortOrder || 0,
+      slug,
       createdBy: {
         _id: req.user._id,
         email: req.user.email,

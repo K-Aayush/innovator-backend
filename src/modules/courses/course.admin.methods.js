@@ -8,7 +8,7 @@ const fs = require("fs");
 const AddCourse = async (req, res) => {
   try {
     const data = req?.body;
-    const author = req?.admin || req?.user;
+    const author = req?.admin;
 
     // Check if user is admin
     if (req.user.role !== "admin") {

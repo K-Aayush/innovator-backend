@@ -80,7 +80,7 @@ const basicMiddleware = async (req, res, next) => {
     req.user = {
       _id: user._id,
       email: user.email,
-      phone: user.phone,
+      phone: user.phone || null,
       role: user.role,
       uid: user.uid || null,
     };

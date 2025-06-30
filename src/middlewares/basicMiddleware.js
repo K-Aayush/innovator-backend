@@ -89,7 +89,7 @@ const basicMiddleware = async (req, res, next) => {
       req.admin = {
         _id: user._id,
         email: user.email,
-        phone: user.phone,
+        phone: user.phone || null,
       };
     }
 

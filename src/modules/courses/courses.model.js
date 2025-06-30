@@ -39,7 +39,7 @@ const CourseSchema = new Schema(
     author: gen.required({
       email: gen.required(String),
       _id: gen.required(String),
-      phone: gen.required(String),
+      phone: String,
     }),
     level: {
       type: String,

@@ -19,6 +19,7 @@ const {
   ClearSeenVideoContent,
 } = require("./content.video-reels.js");
 const { GetFeed } = require("./content.ml-list.js");
+const { GetContentById } = require("./content.single.js");
 
 const router = require("express").Router();
 
@@ -62,6 +63,8 @@ router.delete(
   },
   DeleteContent
 );
+
+router.get("/content/:id", basicMiddleware, GetContentById);
 
 // Video reel feed endpoints
 router.get(

@@ -101,7 +101,7 @@ const EventSchema = new Schema(
     isPublic: { type: Boolean, default: true },
     featured: { type: Boolean, default: false },
     allowWaitlist: { type: Boolean, default: true },
-    certificateTemplate: String, // Path to certificate template
+    certificateTemplate: String, 
     feedbackForm: {
       enabled: { type: Boolean, default: true },
       questions: [
@@ -111,7 +111,7 @@ const EventSchema = new Schema(
             type: String,
             enum: ["text", "rating", "multiple_choice", "checkbox"],
           },
-          options: [String], // For multiple choice/checkbox
+          options: [String], 
           required: { type: Boolean, default: false },
         },
       ],

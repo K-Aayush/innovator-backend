@@ -69,7 +69,7 @@ const EventRegistrationSchema = new Schema(
         default: false,
       },
       checkInTime: Date,
-      checkInBy: String, // Admin who checked in
+      checkInBy: String,
       attended: {
         type: Boolean,
         default: false,

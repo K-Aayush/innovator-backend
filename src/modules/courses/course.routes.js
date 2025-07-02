@@ -2,7 +2,8 @@ const basicMiddleware = require("../../middlewares/basicMiddleware");
 const AdminFiles = require("../../utils/fileProcessor/multer.courses");
 const { AddCourse, DelCourses } = require("./course.admin.methods");
 const { MultipleFiles, DeleteFiles } = require("./course.file");
-const ListCourses = require("./courses.list");
+const { ListCourses, GetCourseById } = require("./courses.list");
+const UpdateCourse = require("./course.update.methods");
 const {
   GetCoursePDFs,
   GetCourseVideos,
@@ -58,10 +59,15 @@ route.delete("/delete-course-files", basicMiddleware, DeleteFiles);
 
 // Course management
 route.post("/add-course", basicMiddleware, AddCourse);
+route.put("/update-course/:id", basicMiddleware, UpdateCourse);
 route.delete("/delete-courses/:id", basicMiddleware, DelCourses);
 
 // List courses
 route.get("/list-courses", basicMiddleware, ListCourses);
+
+// Get single course by ID
+route.get("/course/:id", basicMiddleware, GetCourseById);
+
 route.get("/admin-list-courses/:page", basicMiddleware, ListCourses);
 
 // Course content routes - PDFs and Videos separately

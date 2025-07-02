@@ -204,43 +204,6 @@ async function updateCategoryMetadata(categoryId) {
   }
 }
 
-// Helper function to calculate estimated duration
-function calculateEstimatedDuration(notes) {
-  if (!notes || !Array.isArray(notes)) return "0 hours";
-
-  let totalMinutes = 0;
-
-  notes.forEach((note) => {
-    if (note.fileType === "pdf") {
-      totalMinutes += 5;
-    } else if (note.fileType === "video") {
-      if (note.duration) {
-        if (typeof note.duration === "string" && note.duration.includes(":")) {
-          const [minutes, seconds] = note.duration.split(":").map(Number);
-          totalMinutes += minutes + seconds / 60;
-        } else {
-          totalMinutes += parseInt(note.duration) || 10;
-        }
-      } else {
-        totalMinutes += 10;
-      }
-    } else {
-      totalMinutes += 3;
-    }
-  });
-
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = Math.round(totalMinutes % 60);
-
-  if (hours > 0) {
-    return `${hours} hour${hours > 1 ? "s" : ""} ${
-      minutes > 0 ? `${minutes} min` : ""
-    }`;
-  } else {
-    return `${minutes} minutes`;
-  }
-}
-
 module.exports = {
   UpdateCourse,
 };

@@ -23,17 +23,67 @@ const { GetContentById } = require("./content.single.js");
 
 const router = require("express").Router();
 
-// Rate limiter for feed and view requests
+// More reasonable rate limiter for feed requests
 const feedRateLimiter = rateLimit({
-  windowMs: 10 * 60 * 1000, // 10 minutes
-  max: 50, // 50 feed requests per user
-  message: "Too many feed requests, please try again later",
+  windowMs: 5 * 60 * 1000, // 5 minutes
+  max: 20000,
+  message: {
+    status: 429,
+    data: null,
+    error: { message: "Too many feed requests, please try again later" },
+    message: "Rate limit exceeded. Please wait before making more requests.",
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  // Skip rate limiting for certain conditions
+  skip: (req) => {
+    // Skip rate limiting for admin users
+    if (req.user?.role === "admin") return true;
+
+    // Skip for refresh requests (less frequent)
+    if (req.query.refresh === "true") return false;
+
+    return false;
+  },
+  // Custom key generator to be more lenient
+  keyGenerator: (req) => {
+    return `feed_${req.user?._id || req.ip}`;
+  },
 });
 
+// Separate, more lenient rate limiter for view tracking
 const viewRateLimiter = rateLimit({
-  windowMs: 10 * 60 * 1000, // 10 minutes
-  max: 100, // 100 view requests per user
-  message: "Too many view requests, please try again later",
+  windowMs: 1 * 60 * 1000, // 1 minute
+  max: 3000,
+  message: {
+    status: 429,
+    data: null,
+    error: { message: "Too many view requests, please try again later" },
+    message: "View rate limit exceeded. Please slow down.",
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    return `view_${req.user?._id || req.ip}`;
+  },
+});
+
+// Very lenient rate limiter for content operations
+const contentOperationLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 1000, // 100 operations per 15 minutes
+  message: {
+    status: 429,
+    data: null,
+    error: { message: "Too many content operations, please try again later" },
+    message: "Content operation rate limit exceeded.",
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => {
+    // Skip for admin users
+    return req.user?.role === "admin";
+  },
 });
 
 // File uploads
@@ -42,10 +92,16 @@ router.post("/add-file", basicMiddleware, UserFiles.single("file"), SingleFile);
 router.post("/delete-files", basicMiddleware, DeleteFiles);
 
 // Content management
-router.post("/new-content", basicMiddleware, AddContent);
+router.post(
+  "/new-content",
+  basicMiddleware,
+  contentOperationLimiter,
+  AddContent
+);
 router.post(
   "/update-contents/:id",
   basicMiddleware,
+  contentOperationLimiter,
   async (req, res, next) => {
     const { id } = req.params;
     viewCountCache.del(`views_${id}`);
@@ -56,6 +112,7 @@ router.post(
 router.delete(
   "/delete-content/:id",
   basicMiddleware,
+  contentOperationLimiter,
   async (req, res, next) => {
     const { id } = req.params;
     viewCountCache.del(`views_${id}`);
@@ -66,7 +123,7 @@ router.delete(
 
 router.get("/content/:id", basicMiddleware, GetContentById);
 
-// Video reel feed endpoints
+// Video reel feed endpoints with more lenient rate limiting
 router.get(
   "/video-reel",
   basicMiddleware,
@@ -76,7 +133,7 @@ router.get(
 router.get("/video-content/:id", basicMiddleware, GetVideoContentById);
 router.post("/clear-seen-videos", basicMiddleware, ClearSeenVideoContent);
 
-// View tracking
+// View tracking with separate rate limiter
 router.post(
   "/content/:id/view",
   basicMiddleware,
@@ -85,7 +142,7 @@ router.post(
 );
 router.get("/content/:id/views", basicMiddleware, GetViewCount);
 
-// Consolidated feed endpoint
+// Main feed endpoint with optimized rate limiting
 router.get(
   "/feed",
   basicMiddleware,
@@ -98,16 +155,15 @@ router.get(
   GetFeed
 );
 
-// Legacy routes
-router.get("/list-contents", basicMiddleware, ListContents);
+// Legacy routes with rate limiting
+router.get("/list-contents", basicMiddleware, feedRateLimiter, ListContents);
 router.post("/load-engagement", basicMiddleware, LoadEngagementData);
 
-// Admin routes
+// Admin routes (no rate limiting for admins)
 router.get("/list-admin-contents/:page", basicMiddleware, ListContents);
 router.delete(
   "/admin-delete-content/:id",
   basicMiddleware,
-
   async (req, res, next) => {
     const { id } = req.params;
     viewCountCache.del(`views_${id}`);

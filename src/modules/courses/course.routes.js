@@ -3,7 +3,7 @@ const AdminFiles = require("../../utils/fileProcessor/multer.courses");
 const { AddCourse, DelCourses } = require("./course.admin.methods");
 const { MultipleFiles, DeleteFiles } = require("./course.file");
 const { ListCourses, GetCourseById } = require("./courses.list");
-const UpdateCourse = require("./course.update.methods");
+const { UpdateCourse } = require("./course.update.methods");
 const {
   GetCoursePDFs,
   GetCourseVideos,

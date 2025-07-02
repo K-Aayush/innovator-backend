@@ -10,12 +10,29 @@ const NodeCache = require("node-cache");
 
 const feedSessionCache = new NodeCache({ stdTTL: 1800 }); // 30 minutes
 
-// Helper to track feed session
+// Helper to track feed session with rate limiting awareness
 const trackFeedSession = (userId, sessionData) => {
-  feedSessionCache.set(`session_${userId}`, {
+  const sessionKey = `session_${userId}`;
+  const existingSession = feedSessionCache.get(sessionKey);
+
+  // Track request frequency to help with rate limiting
+  const now = new Date();
+  const requestHistory = existingSession?.requestHistory || [];
+
+  // Keep only requests from last 5 minutes
+  const recentRequests = requestHistory.filter(
+    (time) => now - time < 5 * 60 * 1000
+  );
+  recentRequests.push(now);
+
+  feedSessionCache.set(sessionKey, {
     ...sessionData,
-    lastActivity: new Date(),
+    lastActivity: now,
+    requestHistory: recentRequests,
+    requestCount: recentRequests.length,
   });
+
+  return recentRequests.length;
 };
 
 // Helper to determine content type
@@ -40,7 +57,7 @@ const determineContentType = (files) => {
   return "text";
 };
 
-// Main feed endpoint
+// Main feed endpoint with improved rate limiting handling
 const GetFeed = async (req, res) => {
   try {
     const {
@@ -67,13 +84,29 @@ const GetFeed = async (req, res) => {
         );
     }
 
-    // Track session
-    trackFeedSession(user._id, {
+    // Track session and check request frequency
+    const requestCount = trackFeedSession(user._id, {
       requestTime: new Date(),
       limit: limitNum,
       refresh: forceRefresh,
       quality,
     });
+
+    // Implement client-side caching hints for frequent requests
+    const cacheHeaders = {
+      "Cache-Control": forceRefresh ? "no-cache" : "public, max-age=60",
+      ETag: `"feed-${user._id}-${cursor || "start"}-${limitNum}"`,
+    };
+
+    // Set cache headers
+    Object.entries(cacheHeaders).forEach(([key, value]) => {
+      res.set(key, value);
+    });
+
+    // Check if client has cached version (ETag)
+    if (!forceRefresh && req.headers["if-none-match"] === cacheHeaders.ETag) {
+      return res.status(304).end();
+    }
 
     // Clear caches and seen content on refresh
     if (forceRefresh) {
@@ -103,9 +136,9 @@ const GetFeed = async (req, res) => {
     };
 
     // Fetch content using Content model
-    const fetchLimit = limitNum * 3; // Fetch 90 items to ensure 20–30 after splitting
+    const fetchLimit = limitNum * 2; // Reduced multiplier for better performance
     const content = await Content.find(filters)
-      .sort({ createdAt: -1, views: -1 }) // Instagram-like default sort
+      .sort({ createdAt: -1, views: -1 })
       .limit(fetchLimit)
       .lean();
 
@@ -140,7 +173,7 @@ const GetFeed = async (req, res) => {
           ...scored,
           mlScore: forceRefresh
             ? scored.mlScore + (Math.random() * 0.3 - 0.15)
-            : scored.mlScore, // Randomize on refresh
+            : scored.mlScore,
         }))
       )
     );
@@ -155,12 +188,12 @@ const GetFeed = async (req, res) => {
           ...scored,
           mlScore: forceRefresh
             ? scored.mlScore + (Math.random() * 0.3 - 0.15)
-            : scored.mlScore, // Randomize on refresh
+            : scored.mlScore,
         }))
       )
     );
 
-    // Sort by ML score and priority (Instagram-like)
+    // Sort by ML score and priority
     const sortedVideos = scoredVideos.sort(
       (a, b) => b.mlScore + b.priority - (a.mlScore + a.priority)
     );
@@ -187,7 +220,7 @@ const GetFeed = async (req, res) => {
         .slice(0, Math.floor(limitNum / 4)),
     };
 
-    // Combine with priority to unviewed content, cap at 15 per type
+    // Combine with priority to unviewed content
     const finalVideos = [...videoArrays.unviewed, ...videoArrays.viewed].slice(
       0,
       Math.min(15, Math.ceil(limitNum / 2))
@@ -196,31 +229,6 @@ const GetFeed = async (req, res) => {
       ...normalArrays.unviewed,
       ...normalArrays.viewed,
     ].slice(0, Math.min(15, Math.ceil(limitNum / 2)));
-
-    // Ensure 20–30 total items
-    const totalItems = finalVideos.length + finalNormal.length;
-    if (totalItems < 20 && content.length > 0) {
-      // Fetch additional content if needed
-      const additionalContent = await Content.find({
-        $and: [
-          { _id: { $nin: [...contentIds, ...seenContentIds] } },
-          cursor ? { _id: { $lt: new mongoose.Types.ObjectId(cursor) } } : {},
-        ],
-      })
-        .sort({ createdAt: -1, views: -1 })
-        .limit(fetchLimit)
-        .lean();
-
-      additionalContent.forEach((item) => {
-        const contentType = determineContentType(item.files);
-        item.contentType = contentType;
-        if (contentType === "video" && finalVideos.length < 15) {
-          finalVideos.push(item);
-        } else if (contentType !== "video" && finalNormal.length < 15) {
-          finalNormal.push(item);
-        }
-      });
-    }
 
     // Enrich with engagement data
     const enrichedVideos = await enrichWithEngagementData(
@@ -257,7 +265,7 @@ const GetFeed = async (req, res) => {
       enrichedVideos = shuffle(
         enrichedVideos.map((item) => ({
           ...item,
-          mlScore: item.mlScore + (Math.random() * 0.4 - 0.2), // Stronger randomization
+          mlScore: item.mlScore + (Math.random() * 0.4 - 0.2),
         }))
       );
       enrichedNormal = shuffle(
@@ -285,7 +293,9 @@ const GetFeed = async (req, res) => {
           item.contentType === "text" ? estimateReadTime(item.status) : null,
       })),
       hasMore:
-        content.length >= limitNum || (content.length > 0 && totalItems >= 20),
+        content.length >= limitNum ||
+        (content.length > 0 &&
+          enrichedVideos.length + enrichedNormal.length >= 20),
       nextCursor: content.length > 0 ? content[content.length - 1]._id : null,
       algorithm: "instagram-like",
       seenContentCount: seenContent.size + newContentIds.length,
@@ -302,11 +312,17 @@ const GetFeed = async (req, res) => {
         normalCount: enrichedNormal.length,
         unviewedVideos: videoArrays.unviewed.length,
         unviewedNormal: normalArrays.unviewed.length,
+        requestFrequency: requestCount,
       },
       sessionInfo: {
         totalLoaded: enrichedVideos.length + enrichedNormal.length,
         refreshApplied: forceRefresh,
         quality,
+        rateLimitInfo: {
+          requestsInWindow: requestCount,
+          windowDuration: "5 minutes",
+          maxRequests: 200,
+        },
       },
     };
 

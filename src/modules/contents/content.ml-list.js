@@ -45,7 +45,7 @@ const GetFeed = async (req, res) => {
   try {
     const {
       cursor = null,
-      limit = 30, // Default to 30 for 20–30 total items
+      limit = 30,
       refresh = "false",
       quality = "medium",
     } = req.query;

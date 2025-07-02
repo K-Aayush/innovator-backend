@@ -3,7 +3,6 @@ const GenRes = require("../../utils/routers/GenRes");
 const Courses = require("./courses.model");
 const CourseCategory = require("./course.category.model");
 const path = require("path");
-const fs = require("fs");
 
 // Update course (Admin only)
 const UpdateCourse = async (req, res) => {
@@ -174,111 +173,6 @@ const UpdateCourse = async (req, res) => {
   }
 };
 
-// Get course by ID
-const GetCourseById = async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    if (!id || !isValidObjectId(id)) {
-      return res
-        .status(400)
-        .json(
-          GenRes(
-            400,
-            null,
-            { error: "Invalid course ID" },
-            "Please provide a valid course ID"
-          )
-        );
-    }
-
-    // Find the course
-    const course = await Courses.findById(id).lean();
-    if (!course) {
-      return res
-        .status(404)
-        .json(
-          GenRes(404, null, { error: "Course not found" }, "Course not found")
-        );
-    }
-
-    // Check if course is published (unless user is admin)
-    if (!course.isPublished && req.user?.role !== "admin") {
-      return res
-        .status(403)
-        .json(
-          GenRes(
-            403,
-            null,
-            { error: "Course not available" },
-            "This course is not published"
-          )
-        );
-    }
-
-    // Get additional course statistics
-    const Like = require("../likes/likes.model");
-    const Comment = require("../comments/comments.model");
-
-    const [likes, comments] = await Promise.all([
-      Like.countDocuments({ uid: course._id, type: "course" }),
-      Comment.countDocuments({ uid: course._id, type: "course" }),
-    ]);
-
-    // Check if user has liked the course
-    let liked = false;
-    if (req.user) {
-      const userLike = await Like.findOne({
-        uid: course._id,
-        type: "course",
-        "user.email": req.user.email,
-      });
-      liked = !!userLike;
-    }
-
-    // Enhance course data with statistics and content analysis
-    const enhancedCourse = {
-      ...course,
-      statistics: {
-        likes,
-        comments,
-        liked,
-        enrollmentCount: course.enrollmentCount || 0,
-        rating: course.rating || { average: 0, count: 0 },
-      },
-      contentAnalysis: {
-        totalContent: course.notes ? course.notes.length : 0,
-        pdfCount: course.notes
-          ? course.notes.filter((note) => note.fileType === "pdf").length
-          : 0,
-        videoCount: course.notes
-          ? course.notes.filter((note) => note.fileType === "video").length
-          : 0,
-        estimatedDuration: calculateEstimatedDuration(course.notes),
-      },
-      accessibility: {
-        isPublished: course.isPublished,
-        level: course.level,
-        language: course.language || "English",
-        prerequisites: course.prerequisites || [],
-        learningOutcomes: course.learningOutcomes || [],
-      },
-    };
-
-    const response = GenRes(
-      200,
-      enhancedCourse,
-      null,
-      "Course retrieved successfully!"
-    );
-    return res.status(200).json(response);
-  } catch (error) {
-    console.error("Error getting course:", error);
-    const response = GenRes(500, null, { error }, error?.message);
-    return res.status(500).json(response);
-  }
-};
-
 // Helper function to update category metadata
 async function updateCategoryMetadata(categoryId) {
   try {
@@ -349,5 +243,4 @@ function calculateEstimatedDuration(notes) {
 
 module.exports = {
   UpdateCourse,
-  GetCourseById,
 };

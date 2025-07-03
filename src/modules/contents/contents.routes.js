@@ -20,6 +20,12 @@ const {
 } = require("./content.video-reels.js");
 const { GetFeed } = require("./content.ml-list.js");
 const { GetContentById } = require("./content.single.js");
+const {
+  GetRandomizedFeed,
+  ClearSeenContent,
+  GetSeenContentStats,
+  UpdateUserInterests,
+} = require("./content.randomize-feed.js");
 
 const router = require("express").Router();
 
@@ -85,6 +91,19 @@ const contentOperationLimiter = rateLimit({
     return req.user?.role === "admin";
   },
 });
+
+// Enhanced randomized feed endpoints
+router.get(
+  "/random-feed",
+  basicMiddleware,
+  feedRateLimiter,
+  validateRandomFeedParams,
+  GetRandomizedFeed
+);
+
+router.post("/clear-seen-content", basicMiddleware, ClearSeenContent);
+router.get("/seen-content-stats", basicMiddleware, GetSeenContentStats);
+router.post("/update-interests", basicMiddleware, UpdateUserInterests);
 
 // File uploads
 router.post("/add-files", basicMiddleware, UserFiles.any(), MultipleFiles);

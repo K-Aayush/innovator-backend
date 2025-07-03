@@ -8,9 +8,9 @@ const { isValidObjectId } = require("mongoose");
 const NodeCache = require("node-cache");
 
 // Cache for randomized feed optimization
-const randomizedFeedCache = new NodeCache({ stdTTL: 180 });
-const userSeenCache = new NodeCache({ stdTTL: 86400 });
-const userProfileCache = new NodeCache({ stdTTL: 600 });
+const randomizedFeedCache = new NodeCache({ stdTTL: 300 });
+const userSeenCache = new NodeCache({ stdTTL: 7200 });
+const contentPoolCache = new NodeCache({ stdTTL: 600 });
 
 // Helper function to check if content has video files
 const hasVideoFiles = (files) => {
@@ -38,21 +38,52 @@ const determineContentType = (files) => {
   return "text";
 };
 
-// Fisher-Yates shuffle algorithm
-const shuffleArray = (array) => {
+// Advanced Fisher-Yates shuffle with weighted randomization
+const shuffleArray = (array, weights = null) => {
   const shuffled = [...array];
-  for (let i = shuffled.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+
+  if (weights && weights.length === array.length) {
+    // Weighted shuffle - items with higher weights more likely to appear first
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const weightSum = weights.slice(0, i + 1).reduce((a, b) => a + b, 0);
+      let random = Math.random() * weightSum;
+      let j = 0;
+
+      while (random > weights[j] && j < i) {
+        random -= weights[j];
+        j++;
+      }
+
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+      [weights[i], weights[j]] = [weights[j], weights[i]];
+    }
+  } else {
+    // Standard Fisher-Yates shuffle
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
   }
+
   return shuffled;
 };
 
-// Track seen content for user
+// Track seen content with rotation strategy
 const trackSeenContent = (userId, contentIds) => {
   const key = `seen_content_${userId}`;
   const seenContent = userSeenCache.get(key) || new Set();
+
   contentIds.forEach((id) => seenContent.add(id.toString()));
+
+  // If seen content gets too large, keep only recent 50% to allow rotation
+  if (seenContent.size > 1000) {
+    const seenArray = Array.from(seenContent);
+    const keepCount = Math.floor(seenArray.length * 0.5);
+    const recentSeen = new Set(seenArray.slice(-keepCount));
+    userSeenCache.set(key, recentSeen);
+    return recentSeen;
+  }
+
   userSeenCache.set(key, seenContent);
   return seenContent;
 };
@@ -70,127 +101,140 @@ const clearSeenContent = (userId) => {
   return new Set();
 };
 
-// Calculate engagement score for content
-const calculateEngagementScore = (likes, comments, views, shares = 0) => {
-  const totalEngagement = likes * 1 + comments * 3 + shares * 5 + views * 0.1;
-  return Math.min(totalEngagement / 100, 10);
+// Calculate dynamic engagement score with time decay
+const calculateEngagementScore = (
+  likes,
+  comments,
+  views,
+  shares = 0,
+  createdAt
+) => {
+  const baseEngagement = likes * 1 + comments * 3 + shares * 5 + views * 0.1;
+
+  // Time decay factor - newer content gets slight boost
+  const ageInHours =
+    (Date.now() - new Date(createdAt).getTime()) / (1000 * 60 * 60);
+  const timeFactor = Math.max(0.1, 1 / (1 + ageInHours * 0.01));
+
+  return Math.min((baseEngagement * timeFactor) / 100, 10);
 };
 
-// Get comprehensive user profile for personalization
-const getUserProfile = async (userId, userEmail) => {
-  const cacheKey = `user_profile_${userId}`;
-  const cached = userProfileCache.get(cacheKey);
+// Get comprehensive user profile with preferences and social context
+const getUserProfileAndContext = async (userId, userEmail) => {
+  const cacheKey = `user_profile_context_${userId}`;
+  const cached = randomizedFeedCache.get(cacheKey);
   if (cached) return cached;
 
-  try {
-    const [user, following, recentLikes, recentComments] = await Promise.all([
+  // Get user details from User model
+  const [userProfile, following, followers, recentLikes, recentComments] =
+    await Promise.all([
       User.findById(userId)
         .select(
-          "interests level profession education location gender bio createdAt"
+          "interests level profession education location gender bio level createdAt"
         )
         .lean(),
       Follow.find({ "follower._id": userId })
         .select("following.email following._id following.name")
         .limit(200)
         .lean(),
+      Follow.find({ "following._id": userId })
+        .select("follower.email follower._id follower.name")
+        .limit(200)
+        .lean(),
       Like.find({ "user.email": userEmail })
         .sort({ createdAt: -1 })
         .limit(100)
-        .select("uid createdAt type")
+        .select("uid type createdAt")
         .lean(),
       Comment.find({ "user.email": userEmail })
         .sort({ createdAt: -1 })
         .limit(50)
-        .select("uid createdAt type")
+        .select("uid type createdAt")
         .lean(),
     ]);
 
-    // Analyze user behavior patterns
-    const contentTypePreferences = analyzeContentTypePreferences(
+  // Build comprehensive user context
+  const context = {
+    // User profile data
+    userProfile: userProfile || {},
+    interests: userProfile?.interests || [],
+    profession: userProfile?.profession || "",
+    education: userProfile?.education || "",
+    location: userProfile?.location || "",
+    level: userProfile?.level || "bronze",
+    accountAge: userProfile?.createdAt
+      ? Math.floor(
+          (Date.now() - new Date(userProfile.createdAt).getTime()) /
+            (1000 * 60 * 60 * 24)
+        )
+      : 0,
+
+    // Social context
+    followingEmails: following.map((f) => f.following.email),
+    followingIds: following.map((f) => f.following._id),
+    followingNames: following.map((f) => f.following.name),
+    followerCount: followers.length,
+    followingCount: following.length,
+
+    // Engagement patterns
+    recentLikedContent: recentLikes.map((l) => l.uid),
+    recentCommentedContent: recentComments.map((c) => c.uid),
+    interactionHistory: new Set([
+      ...recentLikes.map((l) => l.uid),
+      ...recentComments.map((c) => c.uid),
+    ]),
+
+    // Content preferences based on interactions
+    preferredContentTypes: extractContentTypePreferences(
       recentLikes,
       recentComments
-    );
-    const activityPattern = analyzeActivityPattern(recentLikes, recentComments);
-    const interactionHistory = buildInteractionHistory(
+    ),
+    preferredAuthors: extractPreferredAuthors(recentLikes, recentComments),
+    engagementPattern: analyzeEngagementPattern(recentLikes, recentComments),
+
+    // Activity patterns
+    activeHours: calculateActiveHours(recentLikes, recentComments),
+    engagementFrequency: calculateEngagementFrequency(
       recentLikes,
       recentComments
-    );
+    ),
+  };
 
-    const profile = {
-      user: user || {},
-      followingEmails: following.map((f) => f.following.email),
-      followingIds: following.map((f) => f.following._id),
-      followingNames: following.map((f) => f.following.name),
-      recentLikedContent: recentLikes.map((l) => l.uid),
-      recentCommentedContent: recentComments.map((c) => c.uid),
-      interactionHistory,
-
-      // User preferences from profile
-      interests: user?.interests || [],
-      profession: user?.profession || "",
-      education: user?.education || "",
-      location: user?.location || "",
-      userLevel: user?.level || "bronze",
-      accountAge: user?.createdAt
-        ? Date.now() - new Date(user.createdAt).getTime()
-        : 0,
-
-      // Behavioral analysis
-      contentTypePreferences,
-      activityPattern,
-      preferredAuthors: extractPreferredAuthors(recentLikes, recentComments),
-      engagementStyle: analyzeEngagementStyle(recentLikes, recentComments),
-    };
-
-    userProfileCache.set(cacheKey, profile);
-    return profile;
-  } catch (error) {
-    console.error("Error getting user profile:", error);
-    // Return minimal profile on error
-    return {
-      user: {},
-      followingEmails: [],
-      followingIds: [],
-      followingNames: [],
-      recentLikedContent: [],
-      recentCommentedContent: [],
-      interactionHistory: new Set(),
-      interests: [],
-      profession: "",
-      education: "",
-      location: "",
-      userLevel: "bronze",
-      accountAge: 0,
-      contentTypePreferences: {},
-      activityPattern: {},
-      preferredAuthors: [],
-      engagementStyle: "casual",
-    };
-  }
+  randomizedFeedCache.set(cacheKey, context);
+  return context;
 };
 
-// Analyze content type preferences based on user interactions
-const analyzeContentTypePreferences = (likes, comments) => {
+// Extract content type preferences from user interactions
+const extractContentTypePreferences = (likes, comments) => {
   const typeCount = {};
-  const interactions = [...likes, ...comments];
-
-  interactions.forEach((interaction) => {
-    const type = interaction.type || "content";
-    typeCount[type] = (typeCount[type] || 0) + 1;
+  [...likes, ...comments].forEach((activity) => {
+    typeCount[activity.type] = (typeCount[activity.type] || 0) + 1;
   });
 
-  // Calculate preferences as percentages
-  const total = interactions.length || 1;
-  const preferences = {};
-  Object.keys(typeCount).forEach((type) => {
-    preferences[type] = typeCount[type] / total;
-  });
-
-  return preferences;
+  return Object.entries(typeCount)
+    .sort(([, a], [, b]) => b - a)
+    .slice(0, 3)
+    .map(([type]) => type);
 };
 
-// Analyze user activity patterns
-const analyzeActivityPattern = (likes, comments) => {
+// Extract preferred authors from user interactions
+const extractPreferredAuthors = (likes, comments) => {
+  const authorCount = {};
+  [...likes, ...comments].forEach((activity) => {
+    if (activity.author?.email) {
+      authorCount[activity.author.email] =
+        (authorCount[activity.author.email] || 0) + 1;
+    }
+  });
+
+  return Object.entries(authorCount)
+    .sort(([, a], [, b]) => b - a)
+    .slice(0, 10)
+    .map(([email]) => email);
+};
+
+// Analyze user engagement patterns
+const analyzeEngagementPattern = (likes, comments) => {
   const hourlyActivity = new Array(24).fill(0);
   const dailyActivity = new Array(7).fill(0);
 
@@ -204,114 +248,62 @@ const analyzeActivityPattern = (likes, comments) => {
   });
 
   return {
-    hourlyActivity,
-    dailyActivity,
-    mostActiveHour: hourlyActivity.indexOf(Math.max(...hourlyActivity)),
-    mostActiveDay: dailyActivity.indexOf(Math.max(...dailyActivity)),
+    hourlyPattern: hourlyActivity,
+    dailyPattern: dailyActivity,
+    totalInteractions: likes.length + comments.length,
+    likeToCommentRatio: likes.length / Math.max(comments.length, 1),
   };
 };
 
-// Build interaction history
-const buildInteractionHistory = (likes, comments) => {
-  const history = new Set();
+// Calculate user's active hours
+const calculateActiveHours = (likes, comments) => {
+  const hourlyActivity = new Array(24).fill(0);
   [...likes, ...comments].forEach((activity) => {
-    history.add(activity.uid);
+    const hour = new Date(activity.createdAt).getHours();
+    hourlyActivity[hour]++;
   });
-  return history;
+
+  const maxActivity = Math.max(...hourlyActivity);
+  return hourlyActivity.map((count) =>
+    maxActivity > 0 ? count / maxActivity : 0
+  );
 };
 
-// Analyze engagement style
-const analyzeEngagementStyle = (likes, comments) => {
-  const likeCount = likes.length;
-  const commentCount = comments.length;
+// Calculate engagement frequency
+const calculateEngagementFrequency = (likes, comments) => {
+  const totalInteractions = likes.length + comments.length;
+  const daysSinceFirstInteraction =
+    likes.length > 0 || comments.length > 0
+      ? Math.max(
+          1,
+          Math.floor(
+            (Date.now() -
+              new Date(
+                Math.min(
+                  ...[...likes, ...comments].map((a) =>
+                    new Date(a.createdAt).getTime()
+                  )
+                )
+              ).getTime()) /
+              (1000 * 60 * 60 * 24)
+          )
+        )
+      : 1;
 
-  if (commentCount > likeCount * 0.5) return "conversational";
-  if (likeCount > commentCount * 3) return "passive";
-  return "casual";
+  return totalInteractions / daysSinceFirstInteraction;
 };
 
-// Calculate content relevance score based on user profile
-const calculateContentRelevanceScore = (content, userProfile) => {
-  let score = 0.5; // Base score
+// Build comprehensive content pool with user preferences
+const buildContentPool = async (userId, userContext, contentType) => {
+  const cacheKey = `content_pool_${userId}_${contentType}`;
+  const cached = contentPoolCache.get(cacheKey);
+  if (cached) return cached;
 
-  // Interest matching
-  if (userProfile.interests.length > 0) {
-    const contentText = (content.status || "").toLowerCase();
-    const matchingInterests = userProfile.interests.filter((interest) =>
-      contentText.includes(interest.toLowerCase())
-    );
-    score += (matchingInterests.length / userProfile.interests.length) * 0.3;
-  }
+  // Build filters for content type
+  let typeFilters = {};
 
-  // Profession/education relevance
-  if (userProfile.profession) {
-    const contentText = (content.status || "").toLowerCase();
-    if (contentText.includes(userProfile.profession.toLowerCase())) {
-      score += 0.2;
-    }
-  }
-
-  // Location relevance
-  if (userProfile.location) {
-    const contentText = (content.status || "").toLowerCase();
-    if (contentText.includes(userProfile.location.toLowerCase())) {
-      score += 0.15;
-    }
-  }
-
-  // Content type preference
-  const contentType = determineContentType(content.files);
-  if (userProfile.contentTypePreferences[contentType]) {
-    score += userProfile.contentTypePreferences[contentType] * 0.25;
-  }
-
-  // Author preference (if following)
-  if (userProfile.followingEmails.includes(content.author.email)) {
-    score += 0.4;
-  }
-
-  // Previous interaction bonus
-  if (userProfile.interactionHistory.has(content._id.toString())) {
-    score += 0.1;
-  }
-
-  // Account age factor (newer users get more diverse content)
-  if (userProfile.accountAge < 30 * 24 * 60 * 60 * 1000) {
-    // Less than 30 days
-    score += 0.1; // Boost for new users to help discovery
-  }
-
-  return Math.min(score, 1);
-};
-
-// Enhanced content fetching with user profile integration
-const fetchPersonalizedRandomContent = async (
-  userId,
-  userProfile,
-  excludeIds,
-  limit,
-  cursor,
-  contentType
-) => {
-  const fetchLimit = Math.min(limit * 4, 200);
-
-  // Build base filters
-  const baseFilters = {
-    _id: {
-      $nin: excludeIds
-        .map((id) => (isValidObjectId(id) ? id : null))
-        .filter(Boolean),
-    },
-  };
-
-  // Add cursor pagination
-  if (cursor && isValidObjectId(cursor)) {
-    baseFilters._id.$lt = cursor;
-  }
-
-  // Content type filtering
   if (contentType === "video") {
-    baseFilters.$expr = {
+    typeFilters.$expr = {
       $gt: [
         {
           $size: {
@@ -330,7 +322,7 @@ const fetchPersonalizedRandomContent = async (
       ],
     };
   } else if (contentType === "normal") {
-    baseFilters.$expr = {
+    typeFilters.$expr = {
       $eq: [
         {
           $size: {
@@ -350,94 +342,404 @@ const fetchPersonalizedRandomContent = async (
     };
   }
 
-  // Enhanced strategy based on user profile
-  const followedRatio =
-    userProfile.engagementStyle === "conversational" ? 0.7 : 0.5;
-  const discoveryRatio = 1 - followedRatio;
-
-  // Interest-based content filters
-  let interestFilters = {};
-  if (userProfile.interests.length > 0) {
-    const interestRegex = userProfile.interests.map(
-      (interest) => new RegExp(interest, "i")
+  // Build interest-based filters
+  const interestFilters = {};
+  if (userContext.interests?.length > 0) {
+    const interestRegex = userContext.interests.map(
+      (interest) =>
+        new RegExp(interest.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i")
     );
-    interestFilters = {
-      $or: [
-        { status: { $in: interestRegex } },
-        { type: { $in: userProfile.interests } },
-      ],
-    };
+    interestFilters.$or = [
+      { status: { $in: interestRegex } },
+      { type: { $in: userContext.interests.map((i) => i.toLowerCase()) } },
+    ];
   }
 
-  const [followedContent, discoveryContent, interestContent] =
-    await Promise.all([
-      // Content from followed users
-      Content.find({
-        ...baseFilters,
-        "author.email": { $in: userProfile.followingEmails.slice(0, 100) },
-      })
-        .sort({ createdAt: -1, views: -1 })
-        .limit(Math.ceil(fetchLimit * followedRatio))
-        .lean(),
+  // Build profession-based filters
+  const professionFilters = {};
+  if (userContext.profession) {
+    const professionRegex = new RegExp(
+      userContext.profession.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+      "i"
+    );
+    professionFilters.status = professionRegex;
+  }
 
-      // Discovery content (trending + random)
-      Content.find({
-        ...baseFilters,
-        "author.email": { $nin: userProfile.followingEmails },
-      })
-        .sort({ views: -1, createdAt: -1 })
-        .limit(Math.ceil(fetchLimit * discoveryRatio * 0.7))
-        .lean(),
+  // Build location-based filters
+  const locationFilters = {};
+  if (userContext.location) {
+    const locationRegex = new RegExp(
+      userContext.location.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+      "i"
+    );
+    locationFilters.status = locationRegex;
+  }
 
-      // Interest-based content
-      userProfile.interests.length > 0
-        ? Content.find({
-            ...baseFilters,
-            ...interestFilters,
-          })
-            .sort({ createdAt: -1 })
-            .limit(Math.ceil(fetchLimit * discoveryRatio * 0.3))
-            .lean()
-        : Promise.resolve([]),
-    ]);
+  // Fetch comprehensive content pool with user preferences
+  const [
+    followedContent,
+    trendingContent,
+    recentContent,
+    interestBasedContent,
+    professionBasedContent,
+    locationBasedContent,
+    randomContent,
+  ] = await Promise.all([
+    // Content from followed users (35%)
+    Content.find({
+      ...typeFilters,
+      "author.email": { $in: userContext.followingEmails.slice(0, 100) },
+    })
+      .sort({ createdAt: -1 })
+      .limit(200)
+      .lean(),
 
-  // Combine and deduplicate
+    // Trending content (20%)
+    Content.find({
+      ...typeFilters,
+      views: { $gte: 100 },
+    })
+      .sort({ views: -1, createdAt: -1 })
+      .limit(150)
+      .lean(),
+
+    // Recent content (15%)
+    Content.find({
+      ...typeFilters,
+      createdAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
+    })
+      .sort({ createdAt: -1 })
+      .limit(100)
+      .lean(),
+
+    // Interest-based content (10%)
+    userContext.interests?.length > 0
+      ? Content.find({
+          ...typeFilters,
+          ...interestFilters,
+        })
+          .sort({ createdAt: -1 })
+          .limit(80)
+          .lean()
+      : Promise.resolve([]),
+
+    // Profession-based content (10%)
+    userContext.profession
+      ? Content.find({
+          ...typeFilters,
+          ...professionFilters,
+        })
+          .sort({ createdAt: -1 })
+          .limit(60)
+          .lean()
+      : Promise.resolve([]),
+
+    // Location-based content (5%)
+    userContext.location
+      ? Content.find({
+          ...typeFilters,
+          ...locationFilters,
+        })
+          .sort({ createdAt: -1 })
+          .limit(40)
+          .lean()
+      : Promise.resolve([]),
+
+    // Random older content (5%)
+    Content.find({
+      ...typeFilters,
+      createdAt: { $lt: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
+    })
+      .sort({ _id: 1 })
+      .limit(50)
+      .lean(),
+  ]);
+
+  // Combine and deduplicate with preference scoring
   const combined = [
-    ...followedContent,
-    ...discoveryContent,
-    ...interestContent,
+    ...followedContent.map((item) => ({ ...item, preferenceScore: 10 })),
+    ...trendingContent.map((item) => ({ ...item, preferenceScore: 8 })),
+    ...recentContent.map((item) => ({ ...item, preferenceScore: 7 })),
+    ...interestBasedContent.map((item) => ({ ...item, preferenceScore: 9 })),
+    ...professionBasedContent.map((item) => ({ ...item, preferenceScore: 8 })),
+    ...locationBasedContent.map((item) => ({ ...item, preferenceScore: 6 })),
+    ...randomContent.map((item) => ({ ...item, preferenceScore: 3 })),
   ];
+
   const seen = new Set();
-  const deduplicated = combined.filter((item) => {
+  const contentPool = combined.filter((item) => {
     const id = item._id.toString();
     if (seen.has(id)) return false;
     seen.add(id);
     return true;
   });
 
-  // Score content based on user profile
-  const scoredContent = deduplicated.map((content) => ({
-    ...content,
-    relevanceScore: calculateContentRelevanceScore(content, userProfile),
-    randomScore: Math.random(),
-  }));
-
-  // Sort by combined relevance and randomness
-  const finalContent = scoredContent.sort((a, b) => {
-    const scoreA = a.relevanceScore * 0.6 + a.randomScore * 0.4;
-    const scoreB = b.relevanceScore * 0.6 + b.randomScore * 0.4;
-    return scoreB - scoreA;
-  });
-
-  return shuffleArray(finalContent);
+  contentPoolCache.set(cacheKey, contentPool);
+  return contentPool;
 };
 
-// Enrich content with engagement data and user context
-const enrichContentWithEngagement = async (
-  contents,
-  userEmail,
-  userProfile
+const generateInfiniteContent = async (
+  userId,
+  userContext,
+  seenContent,
+  limit,
+  contentType,
+  rotationCycle = 0
 ) => {
+  // Get comprehensive content pool
+  const contentPool = await buildContentPool(userId, userContext, contentType);
+
+  if (contentPool.length === 0) {
+    return [];
+  }
+
+  const seenRatio = seenContent.size / contentPool.length;
+
+  let selectedContent = [];
+
+  if (seenRatio < 0.3) {
+    const unseenContent = contentPool.filter(
+      (item) => !seenContent.has(item._id.toString())
+    );
+    selectedContent = unseenContent.sort(
+      (a, b) => (b.preferenceScore || 0) - (a.preferenceScore || 0)
+    );
+  } else if (seenRatio < 0.7) {
+    const unseenContent = contentPool.filter(
+      (item) => !seenContent.has(item._id.toString())
+    );
+    const seenContentArray = contentPool.filter((item) =>
+      seenContent.has(item._id.toString())
+    );
+
+    // Sort by preference score
+    const sortedUnseen = unseenContent.sort(
+      (a, b) => (b.preferenceScore || 0) - (a.preferenceScore || 0)
+    );
+    const sortedSeen = seenContentArray.sort(
+      (a, b) => (b.preferenceScore || 0) - (a.preferenceScore || 0)
+    );
+
+    // 70% unseen, 30% seen (for variety)
+    const unseenCount = Math.ceil(limit * 0.7);
+    const seenCount = limit - unseenCount;
+
+    selectedContent = [
+      ...sortedUnseen.slice(0, unseenCount),
+      ...shuffleArray(sortedSeen).slice(0, seenCount),
+    ];
+  } else {
+    selectedContent = contentPool.sort((a, b) => {
+      const preferenceWeight =
+        (b.preferenceScore || 0) - (a.preferenceScore || 0);
+      const randomWeight = Math.random() - 0.5;
+      return preferenceWeight * 0.7 + randomWeight * 0.3;
+    });
+  }
+
+  // Apply user-preference-aware randomization layers
+  const randomizationLayers = [
+    () => {
+      const weights = selectedContent.map((item) => {
+        let weight = item.preferenceScore || 1;
+
+        // Boost content from preferred authors
+        if (userContext.preferredAuthors?.includes(item.author.email)) {
+          weight += 5;
+        }
+
+        // Boost content matching user interests
+        if (
+          userContext.interests?.some((interest) =>
+            item.status?.toLowerCase().includes(interest.toLowerCase())
+          )
+        ) {
+          weight += 3;
+        }
+
+        // Boost content matching user profession
+        if (
+          userContext.profession &&
+          item.status
+            ?.toLowerCase()
+            .includes(userContext.profession.toLowerCase())
+        ) {
+          weight += 2;
+        }
+
+        return weight + Math.random();
+      });
+      return shuffleArray(selectedContent, weights);
+    },
+
+    // Layer 2: Engagement-weighted shuffle with user pattern
+    () => {
+      const weights = selectedContent.map((item) => {
+        const likes = Math.random() * 100;
+        const comments = Math.random() * 50;
+        const views = item.views || Math.random() * 1000;
+        const engagementScore = calculateEngagementScore(
+          likes,
+          comments,
+          views,
+          0,
+          item.createdAt
+        );
+
+        // Adjust based on user's engagement pattern
+        const userEngagementBoost =
+          userContext.engagementPattern?.likeToCommentRatio > 2
+            ? likes * 0.1
+            : comments * 0.2;
+
+        return engagementScore + userEngagementBoost + Math.random();
+      });
+      return shuffleArray(selectedContent, weights);
+    },
+
+    // Layer 3: Time-based rotation with user activity pattern
+    () => {
+      const currentHour = new Date().getHours();
+      const userActiveNow = userContext.activeHours?.[currentHour] > 0.5;
+
+      const timeGroups = {
+        recent: [],
+        medium: [],
+        old: [],
+      };
+
+      const now = Date.now();
+      selectedContent.forEach((item) => {
+        const age = now - new Date(item.createdAt).getTime();
+        const ageInDays = age / (1000 * 60 * 60 * 24);
+
+        // Boost recent content if user is active now
+        const timeBoost = userActiveNow && ageInDays < 1 ? 2 : 1;
+        item.timeBoost = timeBoost;
+
+        if (ageInDays < 7) timeGroups.recent.push(item);
+        else if (ageInDays < 30) timeGroups.medium.push(item);
+        else timeGroups.old.push(item);
+      });
+
+      return shuffleArray([
+        ...shuffleArray(timeGroups.recent),
+        ...shuffleArray(timeGroups.medium),
+        ...shuffleArray(timeGroups.old),
+      ]);
+    },
+
+    // Layer 4: Author diversity shuffle with user following pattern
+    () => {
+      const authorGroups = {};
+      selectedContent.forEach((item) => {
+        const authorEmail = item.author.email;
+        if (!authorGroups[authorEmail]) authorGroups[authorEmail] = [];
+        authorGroups[authorEmail].push(item);
+      });
+
+      // Prioritize followed authors but maintain diversity
+      const followedAuthors = Object.keys(authorGroups).filter((email) =>
+        userContext.followingEmails.includes(email)
+      );
+      const otherAuthors = Object.keys(authorGroups).filter(
+        (email) => !userContext.followingEmails.includes(email)
+      );
+
+      // Interleave content: 60% followed, 40% others
+      const result = [];
+      const maxLength = Math.max(
+        ...Object.values(authorGroups).map((arr) => arr.length)
+      );
+
+      for (let i = 0; i < maxLength; i++) {
+        // Add from followed authors first
+        shuffleArray(followedAuthors).forEach((authorEmail) => {
+          if (authorGroups[authorEmail][i]) {
+            result.push(authorGroups[authorEmail][i]);
+          }
+        });
+
+        // Then add from other authors
+        shuffleArray(otherAuthors).forEach((authorEmail) => {
+          if (authorGroups[authorEmail][i] && result.length < limit * 2) {
+            result.push(authorGroups[authorEmail][i]);
+          }
+        });
+      }
+
+      return result;
+    },
+  ];
+
+  // Apply random layer based on rotation cycle
+  const layerIndex = rotationCycle % randomizationLayers.length;
+  const randomizedContent = randomizationLayers[layerIndex]();
+
+  // Add user-specific scoring
+  return randomizedContent.slice(0, limit * 2).map((item) => ({
+    ...item,
+    randomSeed: Math.random(),
+    rotationCycle,
+    layerUsed: layerIndex,
+    userRelevanceScore: calculateUserRelevanceScore(item, userContext),
+  }));
+};
+
+// Calculate user relevance score based on profile and preferences
+const calculateUserRelevanceScore = (content, userContext) => {
+  let score = 0.5;
+
+  // Following relationship boost
+  if (userContext.followingEmails.includes(content.author.email)) {
+    score += 0.3;
+  }
+
+  // Interest matching boost
+  if (
+    userContext.interests?.some((interest) =>
+      content.status?.toLowerCase().includes(interest.toLowerCase())
+    )
+  ) {
+    score += 0.2;
+  }
+
+  // Profession matching boost
+  if (
+    userContext.profession &&
+    content.status?.toLowerCase().includes(userContext.profession.toLowerCase())
+  ) {
+    score += 0.15;
+  }
+
+  // Location matching boost
+  if (
+    userContext.location &&
+    content.status?.toLowerCase().includes(userContext.location.toLowerCase())
+  ) {
+    score += 0.1;
+  }
+
+  // Preferred author boost
+  if (userContext.preferredAuthors?.includes(content.author.email)) {
+    score += 0.25;
+  }
+
+  // Content type preference boost
+  if (userContext.preferredContentTypes?.includes(content.type)) {
+    score += 0.15;
+  }
+
+  // Account level boost (more experienced users get diverse content)
+  if (userContext.level === "gold" || userContext.level === "platinum") {
+    score += 0.05;
+  }
+
+  return Math.min(score, 1);
+};
+
+// Enrich content with engagement data
+const enrichContentWithEngagement = async (contents, userEmail) => {
   if (!contents.length) return [];
 
   const contentIds = contents.map((c) => c._id.toString());
@@ -506,25 +808,18 @@ const enrichContentWithEngagement = async (
           likes,
           comments,
           views,
-          shares
+          shares,
+          content.createdAt
         ),
       },
-      personalization: {
-        relevanceScore: content.relevanceScore || 0,
-        isFromFollowing: userProfile.followingEmails.includes(
-          content.author.email
-        ),
-        matchesInterests: userProfile.interests.some((interest) =>
-          (content.status || "").toLowerCase().includes(interest.toLowerCase())
-        ),
-        previouslyInteracted: userProfile.interactionHistory.has(contentId),
-      },
-      randomScore: content.randomScore || Math.random(),
+      infiniteScore:
+        (content.randomSeed || Math.random()) * 0.4 +
+        (content.userRelevanceScore || 0.5) * 0.6,
     };
   });
 };
 
-// Main enhanced randomized feed endpoint
+// Main infinite randomized feed endpoint
 const GetRandomizedFeed = async (req, res) => {
   try {
     const {
@@ -532,7 +827,7 @@ const GetRandomizedFeed = async (req, res) => {
       limit = 20,
       contentType = "all",
       clearCache = "false",
-      personalized = "true",
+      rotationCycle = 0,
     } = req.query;
 
     const user = req.user;
@@ -540,75 +835,47 @@ const GetRandomizedFeed = async (req, res) => {
     const userEmail = user.email;
     const limitNum = Math.min(parseInt(limit, 10) || 20, 50);
     const shouldClearCache = clearCache === "true";
-    const usePersonalization = personalized === "true";
-
-    // Validate cursor
-    if (cursor && !isValidObjectId(cursor)) {
-      return res
-        .status(400)
-        .json(
-          GenRes(
-            400,
-            null,
-            { error: "Invalid cursor" },
-            "Invalid pagination cursor"
-          )
-        );
-    }
+    const currentRotationCycle = parseInt(rotationCycle, 10) || 0;
 
     // Clear seen content if requested
     let seenContent;
     if (shouldClearCache) {
       seenContent = clearSeenContent(userId);
       randomizedFeedCache.flushAll();
-      userProfileCache.del(`user_profile_${userId}`);
+      contentPoolCache.flushAll();
     } else {
       seenContent = getSeenContent(userId);
     }
 
-    // Get comprehensive user profile
-    const userProfile = usePersonalization
-      ? await getUserProfile(userId, userEmail)
-      : {
-          followingEmails: [],
-          followingIds: [],
-          interactionHistory: new Set(),
-          interests: [],
-          engagementStyle: "casual",
-        };
+    // Get comprehensive user profile and context
+    const userContext = await getUserProfileAndContext(userId, userEmail);
 
-    // Prepare exclusion list
-    const excludeIds = Array.from(seenContent);
-
-    // Fetch personalized content
-    const fetchedContent = await fetchPersonalizedRandomContent(
+    // Generate infinite content with user preferences
+    const fetchedContent = await generateInfiniteContent(
       userId,
-      userProfile,
-      excludeIds,
+      userContext,
+      seenContent,
       limitNum,
-      cursor,
-      contentType
+      contentType,
+      currentRotationCycle
     );
 
-    // Enrich with engagement data and user context
+    // Enrich with engagement data
     const enrichedContent = await enrichContentWithEngagement(
       fetchedContent,
-      userEmail,
-      userProfile
+      userEmail
     );
 
-    // Apply final randomization with personalization weights
+    // Final randomization with user relevance scoring
     const finalRandomizedContent = shuffleArray(
       enrichedContent.map((item) => ({
         ...item,
-        finalScore: usePersonalization
-          ? item.personalization.relevanceScore * 0.4 +
-            (item.engagement.engagementScore / 10) * 0.3 +
-            item.randomScore * 0.3
-          : item.randomScore * 0.7 +
-            (item.engagement.engagementScore / 10) * 0.3,
+        finalInfiniteScore:
+          item.infiniteScore * 0.6 +
+          (item.engagement.engagementScore / 10) * 0.2 +
+          ((item.preferenceScore || 0) / 10) * 0.2,
       }))
-    ).sort((a, b) => b.finalScore - a.finalScore);
+    ).sort((a, b) => b.finalInfiniteScore - a.finalInfiniteScore);
 
     // Separate video and normal content
     const videoContent = [];
@@ -622,9 +889,8 @@ const GetRandomizedFeed = async (req, res) => {
       }
     });
 
-    // Apply final limit while maintaining ratio
-    const videoRatio =
-      userProfile.contentTypePreferences?.video > 0.5 ? 0.6 : 0.4;
+    // Apply content ratio (40% videos, 60% normal)
+    const videoRatio = 0.4;
     const maxVideos = Math.ceil(limitNum * videoRatio);
     const maxNormal = limitNum - maxVideos;
 
@@ -658,52 +924,47 @@ const GetRandomizedFeed = async (req, res) => {
       }
     }
 
-    // Track seen content
+    // Track seen content (with rotation management)
     const newContentIds = [
       ...finalVideoContent.map((item) => item._id.toString()),
       ...finalNormalContent.map((item) => item._id.toString()),
     ];
     const updatedSeenContent = trackSeenContent(userId, newContentIds);
 
-    // Determine if there's more content
-    const hasMore = fetchedContent.length >= limitNum * 2;
-    const nextCursor =
-      hasMore && finalRandomizedContent.length > 0
-        ? finalRandomizedContent[finalRandomizedContent.length - 1]._id
-        : null;
+    const hasMore = true;
+    const nextCursor = `infinite_${Date.now()}_${Math.random()
+      .toString(36)
+      .substr(2, 9)}`;
 
-    // Prepare response with enhanced metrics
+    const contentPool = await buildContentPool(
+      userId,
+      userContext,
+      contentType
+    );
+    const seenRatio = updatedSeenContent.size / Math.max(contentPool.length, 1);
+
     const response = {
       normalContent: finalNormalContent.map((item, index) => ({
         ...item,
         feedPosition: index,
         loadPriority: item.engagement.engagementScore > 5 ? "high" : "normal",
+        isResurfaced: seenContent.has(item._id.toString()),
+        userRelevance: item.userRelevanceScore || 0.5,
       })),
       videoContent: finalVideoContent.map((item, index) => ({
         ...item,
         feedPosition: index,
         loadPriority: item.engagement.engagementScore > 5 ? "high" : "normal",
         autoplay: index < 3,
+        isResurfaced: seenContent.has(item._id.toString()),
+        userRelevance: item.userRelevanceScore || 0.5,
       })),
       hasMore,
       nextCursor,
       totalLoaded: finalVideoContent.length + finalNormalContent.length,
       contentType,
       randomized: true,
-      personalized: usePersonalization,
       seenCount: updatedSeenContent.size,
-      userProfile: usePersonalization
-        ? {
-            interests: userProfile.interests,
-            engagementStyle: userProfile.engagementStyle,
-            followingCount: userProfile.followingEmails.length,
-            accountAge: Math.floor(
-              userProfile.accountAge / (24 * 60 * 60 * 1000)
-            ), // days
-            userLevel: userProfile.userLevel,
-            contentTypePreferences: userProfile.contentTypePreferences,
-          }
-        : null,
       metrics: {
         fetchedCount: fetchedContent.length,
         requestedLimit: limitNum,
@@ -711,19 +972,35 @@ const GetRandomizedFeed = async (req, res) => {
         videoCount: finalVideoContent.length,
         normalCount: finalNormalContent.length,
         shuffleApplied: true,
-        personalizationApplied: usePersonalization,
         cacheCleared: shouldClearCache,
-        followedContentCount: enrichedContent.filter((item) =>
-          userProfile.followingEmails.includes(item.author.email)
-        ).length,
-        interestMatchedCount: usePersonalization
-          ? enrichedContent.filter(
-              (item) => item.personalization.matchesInterests
-            ).length
-          : 0,
-        discoveryContentCount: enrichedContent.filter(
-          (item) => !userProfile.followingEmails.includes(item.author.email)
-        ).length,
+        followedContentRatio: Math.round(
+          (enrichedContent.filter((item) =>
+            userContext.followingEmails.includes(item.author.email)
+          ).length /
+            Math.max(enrichedContent.length, 1)) *
+            100
+        ),
+        discoveryContentRatio: Math.round(
+          (enrichedContent.filter(
+            (item) => !userContext.followingEmails.includes(item.author.email)
+          ).length /
+            Math.max(enrichedContent.length, 1)) *
+            100
+        ),
+        contentPoolSize: contentPool.length,
+        seenRatio: Math.round(seenRatio * 100),
+        rotationCycle: currentRotationCycle,
+        infiniteMode: true,
+        resurfacedCount: newContentIds.filter((id) => seenContent.has(id))
+          .length,
+        userPersonalization: {
+          interestsMatched: userContext.interests?.length || 0,
+          professionMatched: !!userContext.profession,
+          locationMatched: !!userContext.location,
+          followingCount: userContext.followingCount,
+          accountLevel: userContext.level,
+          accountAge: userContext.accountAge,
+        },
       },
     };
 
@@ -734,11 +1011,7 @@ const GetRandomizedFeed = async (req, res) => {
           200,
           response,
           null,
-          `Loaded ${response.totalLoaded} ${
-            usePersonalization ? "personalized " : ""
-          }randomized content items (${response.metrics.videoCount} videos, ${
-            response.metrics.normalCount
-          } normal)`
+          `Loaded ${response.totalLoaded} personalized randomized content items (${response.metrics.videoCount} videos, ${response.metrics.normalCount} normal) - Infinite Mode`
         )
       );
   } catch (error) {
@@ -753,16 +1026,16 @@ const ClearSeenContent = async (req, res) => {
     const userId = req.user._id;
     clearSeenContent(userId);
     randomizedFeedCache.flushAll();
-    userProfileCache.del(`user_profile_${userId}`);
+    contentPoolCache.flushAll();
 
     return res
       .status(200)
       .json(
         GenRes(
           200,
-          { cleared: true, seenCount: 0 },
+          { cleared: true, seenCount: 0, infiniteMode: true },
           null,
-          "Seen content cache cleared successfully"
+          "Seen content cache cleared - Infinite feed reset"
         )
       );
   } catch (error) {
@@ -775,28 +1048,34 @@ const ClearSeenContent = async (req, res) => {
 const GetSeenContentStats = async (req, res) => {
   try {
     const userId = req.user._id;
+    const userEmail = req.user.email;
     const seenContent = getSeenContent(userId);
-    const userProfile = await getUserProfile(userId, req.user.email);
+    const userContext = await getUserProfileAndContext(userId, userEmail);
+    const contentPool = await buildContentPool(userId, userContext, "all");
+
+    const seenRatio = seenContent.size / Math.max(contentPool.length, 1);
 
     return res.status(200).json(
       GenRes(
         200,
         {
           seenCount: seenContent.size,
+          totalContentPool: contentPool.length,
+          seenRatio: Math.round(seenRatio * 100),
+          infiniteMode: true,
+          rotationActive: seenRatio > 0.7,
           canClear: seenContent.size > 0,
           userProfile: {
-            interests: userProfile.interests,
-            engagementStyle: userProfile.engagementStyle,
-            followingCount: userProfile.followingEmails.length,
-            contentTypePreferences: userProfile.contentTypePreferences,
-            accountAge: Math.floor(
-              userProfile.accountAge / (24 * 60 * 60 * 1000)
-            ),
-            userLevel: userProfile.userLevel,
+            interests: userContext.interests,
+            profession: userContext.profession,
+            location: userContext.location,
+            followingCount: userContext.followingCount,
+            level: userContext.level,
+            accountAge: userContext.accountAge,
           },
         },
         null,
-        "Seen content statistics and user profile retrieved"
+        "Infinite feed statistics with user profile retrieved"
       )
     );
   } catch (error) {
@@ -805,54 +1084,8 @@ const GetSeenContentStats = async (req, res) => {
   }
 };
 
-// Update user interests for better personalization
-const UpdateUserInterests = async (req, res) => {
-  try {
-    const userId = req.user._id;
-    const { interests } = req.body;
-
-    if (!Array.isArray(interests)) {
-      return res
-        .status(400)
-        .json(
-          GenRes(
-            400,
-            null,
-            { error: "Interests must be an array" },
-            "Invalid interests format"
-          )
-        );
-    }
-
-    // Update user interests
-    await User.findByIdAndUpdate(
-      userId,
-      { $set: { interests: interests.slice(0, 10) } }, // Limit to 10 interests
-      { new: true }
-    );
-
-    // Clear user profile cache to refresh personalization
-    userProfileCache.del(`user_profile_${userId}`);
-
-    return res
-      .status(200)
-      .json(
-        GenRes(
-          200,
-          { interests: interests.slice(0, 10) },
-          null,
-          "User interests updated successfully"
-        )
-      );
-  } catch (error) {
-    console.error("UpdateUserInterests error:", error);
-    return res.status(500).json(GenRes(500, null, error, error?.message));
-  }
-};
-
 module.exports = {
   GetRandomizedFeed,
   ClearSeenContent,
   GetSeenContentStats,
-  UpdateUserInterests,
 };

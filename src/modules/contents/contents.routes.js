@@ -24,7 +24,6 @@ const {
   GetRandomizedFeed,
   ClearSeenContent,
   GetSeenContentStats,
-  UpdateUserInterests,
 } = require("./content.randomize-feed.js");
 
 const router = require("express").Router();
@@ -172,7 +171,6 @@ router.get(
 
 router.post("/clear-seen-content", basicMiddleware, ClearSeenContent);
 router.get("/seen-content-stats", basicMiddleware, GetSeenContentStats);
-router.post("/update-interests", basicMiddleware, UpdateUserInterests);
 
 // Legacy routes with rate limiting
 router.get("/list-contents", basicMiddleware, feedRateLimiter, ListContents);

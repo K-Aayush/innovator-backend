@@ -819,6 +819,28 @@ const enrichContentWithEngagement = async (contents, userEmail) => {
   });
 };
 
+const enrichContentWithFollowStatus = (contents, userContext) => {
+  const followingEmails = new Set(userContext.followingEmails || []);
+  const followingIds = new Set(
+    userContext.followingIds?.map((id) => id.toString()) || []
+  );
+
+  return contents.map((content) => ({
+    ...content,
+    author: {
+      ...content.author,
+      isFollowed:
+        followingEmails.has(content.author.email) ||
+        followingIds.has(content.author._id?.toString()),
+      followStatus:
+        followingEmails.has(content.author.email) ||
+        followingIds.has(content.author._id?.toString())
+          ? "following"
+          : "not_following",
+    },
+  }));
+};
+
 // Main infinite randomized feed endpoint
 const GetRandomizedFeed = async (req, res) => {
   try {
@@ -866,9 +888,14 @@ const GetRandomizedFeed = async (req, res) => {
       userEmail
     );
 
+    const contentWithFollowStatus = enrichContentWithFollowStatus(
+      enrichedContent,
+      userContext
+    );
+
     // Final randomization with user relevance scoring
     const finalRandomizedContent = shuffleArray(
-      enrichedContent.map((item) => ({
+      contentWithFollowStatus.map((item) => ({
         ...item,
         finalInfiniteScore:
           item.infiniteScore * 0.6 +

@@ -25,7 +25,7 @@ const {
   ClearSeenContent,
   GetSeenContentStats,
   UpdateUserInterests,
-} = require("./content.randomize-feed.js");
+} = require("./content.random-feed.js");
 
 const router = require("express").Router();
 
@@ -91,19 +91,6 @@ const contentOperationLimiter = rateLimit({
     return req.user?.role === "admin";
   },
 });
-
-// Enhanced randomized feed endpoints
-router.get(
-  "/random-feed",
-  basicMiddleware,
-  feedRateLimiter,
-  validateRandomFeedParams,
-  GetRandomizedFeed
-);
-
-router.post("/clear-seen-content", basicMiddleware, ClearSeenContent);
-router.get("/seen-content-stats", basicMiddleware, GetSeenContentStats);
-router.post("/update-interests", basicMiddleware, UpdateUserInterests);
 
 // File uploads
 router.post("/add-files", basicMiddleware, UserFiles.any(), MultipleFiles);
@@ -174,6 +161,19 @@ router.get(
   GetFeed
 );
 
+// Enhanced randomized feed endpoints
+router.get(
+  "/random-feed",
+  basicMiddleware,
+  feedRateLimiter,
+  validateRandomFeedParams,
+  GetRandomizedFeed
+);
+
+router.post("/clear-seen-content", basicMiddleware, ClearSeenContent);
+router.get("/seen-content-stats", basicMiddleware, GetSeenContentStats);
+router.post("/update-interests", basicMiddleware, UpdateUserInterests);
+
 // Legacy routes with rate limiting
 router.get("/list-contents", basicMiddleware, feedRateLimiter, ListContents);
 router.post("/load-engagement", basicMiddleware, LoadEngagementData);
@@ -228,6 +228,62 @@ function validateFeedParams(req, res, next) {
       .status(400)
       .json(
         GenRes(400, null, null, "Invalid refresh: must be 'true' or 'false'")
+      );
+  }
+
+  next();
+}
+
+// Validate random feed parameters
+function validateRandomFeedParams(req, res, next) {
+  const { limit, cursor, contentType, clearCache, personalized } = req.query;
+  const GenRes = require("../../utils/routers/GenRes");
+
+  if (limit && (isNaN(limit) || parseInt(limit) < 1 || parseInt(limit) > 50)) {
+    return res
+      .status(400)
+      .json(GenRes(400, null, null, "Invalid limit: must be between 1 and 50"));
+  }
+
+  if (cursor && !require("mongoose").Types.ObjectId.isValid(cursor)) {
+    return res
+      .status(400)
+      .json(
+        GenRes(400, null, null, "Invalid cursor: must be a valid ObjectId")
+      );
+  }
+
+  if (contentType && !["all", "video", "normal"].includes(contentType)) {
+    return res
+      .status(400)
+      .json(
+        GenRes(
+          400,
+          null,
+          null,
+          "Invalid contentType: must be 'all', 'video', or 'normal'"
+        )
+      );
+  }
+
+  if (clearCache && !["true", "false"].includes(clearCache)) {
+    return res
+      .status(400)
+      .json(
+        GenRes(400, null, null, "Invalid clearCache: must be 'true' or 'false'")
+      );
+  }
+
+  if (personalized && !["true", "false"].includes(personalized)) {
+    return res
+      .status(400)
+      .json(
+        GenRes(
+          400,
+          null,
+          null,
+          "Invalid personalized: must be 'true' or 'false'"
+        )
       );
   }
 

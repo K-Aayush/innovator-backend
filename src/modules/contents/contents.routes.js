@@ -25,7 +25,7 @@ const {
   ClearSeenContent,
   GetSeenContentStats,
   UpdateUserInterests,
-} = require("./content.random-feed.js");
+} = require("./content.randomize-feed.js");
 
 const router = require("express").Router();
 

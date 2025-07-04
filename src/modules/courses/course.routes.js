@@ -18,6 +18,15 @@ const {
   DeleteCourseCategory,
   GetCategoryHierarchy,
 } = require("./course.category.methods");
+const {
+  EnrollInCourse,
+  GetUserEnrollments,
+  UpdateCourseProgress,
+  GetCourseProgress,
+  AddPersonalNote,
+  SubmitCourseFeedback,
+  GetEnrollmentAnalytics,
+} = require("./enrollment.methods");
 
 const route = require("express").Router();
 
@@ -61,6 +70,35 @@ route.delete("/delete-course-files", basicMiddleware, DeleteFiles);
 route.post("/add-course", basicMiddleware, AddCourse);
 route.put("/update-course/:id", basicMiddleware, UpdateCourse);
 route.delete("/delete-courses/:id", basicMiddleware, DelCourses);
+
+// Course enrollment routes
+route.post("/courses/:courseId/enroll", basicMiddleware, EnrollInCourse);
+route.get("/my-enrollments", basicMiddleware, GetUserEnrollments);
+
+// Course progress tracking routes
+route.post(
+  "/courses/:courseId/progress",
+  basicMiddleware,
+  UpdateCourseProgress
+);
+route.get("/courses/:courseId/progress", basicMiddleware, GetCourseProgress);
+
+// Course feedback and rating
+route.post(
+  "/courses/:courseId/feedback",
+  basicMiddleware,
+  SubmitCourseFeedback
+);
+
+// Course analytics
+route.get(
+  "/courses/:courseId/analytics",
+  basicMiddleware,
+  GetEnrollmentAnalytics
+);
+
+// Personal notes for courses
+route.post("/courses/:courseId/notes", basicMiddleware, AddPersonalNote);
 
 // List courses
 route.get("/list-courses", basicMiddleware, ListCourses);

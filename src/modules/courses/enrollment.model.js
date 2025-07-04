@@ -64,7 +64,7 @@ const EnrollmentSchema = new Schema(
     },
     paymentInfo: {
       amount: Number,
-      currency: { type: String, default: "USD" },
+      currency: { type: String, default: "NPR" },
       paymentMethod: String,
       transactionId: String,
       paymentDate: Date,

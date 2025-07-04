@@ -2,6 +2,7 @@ const { isValidObjectId } = require("mongoose");
 const GenRes = require("../../utils/routers/GenRes");
 const Courses = require("./courses.model");
 const CourseCategory = require("./course.category.model");
+const VideoDurationExtractor = require("../../utils/media/videoDurationExtractor");
 const path = require("path");
 const fs = require("fs");
 
@@ -52,36 +53,68 @@ const AddCourse = async (req, res) => {
         );
     }
 
-    // Process notes and determine file types
-    const processedNotes = data.notes
-      ? data.notes.map((note, index) => {
-          let fileType = "other";
-          if (note.pdf) {
-            const ext = path.extname(note.pdf).toLowerCase();
-            const videoExtensions = [
-              ".mp4",
-              ".avi",
-              ".mov",
-              ".wmv",
-              ".flv",
-              ".webm",
-              ".mkv",
-            ];
+    // Process notes and determine file types with video duration extraction
+    const processedNotes = await Promise.all(
+      (data.notes || []).map(async (note, index) => {
+        let fileType = "other";
+        let duration = null;
+        let metadata = {};
 
-            if (note.pdf.toLowerCase().endsWith(".pdf")) {
-              fileType = "pdf";
-            } else if (videoExtensions.includes(ext)) {
-              fileType = "video";
+        if (note.pdf) {
+          const ext = path.extname(note.pdf).toLowerCase();
+          const videoExtensions = [
+            ".mp4",
+            ".avi",
+            ".mov",
+            ".wmv",
+            ".flv",
+            ".webm",
+            ".mkv",
+          ];
+
+          if (note.pdf.toLowerCase().endsWith(".pdf")) {
+            fileType = "pdf";
+          } else if (videoExtensions.includes(ext)) {
+            fileType = "video";
+
+            // Extract video duration and metadata
+            try {
+              const videoPath = path.join(process.cwd(), note.pdf.substring(1));
+              if (fs.existsSync(videoPath)) {
+                const videoMetadata =
+                  await VideoDurationExtractor.getVideoMetadata(videoPath);
+                duration = videoMetadata.duration.formatted;
+                metadata = {
+                  durationSeconds: videoMetadata.duration.seconds,
+                  quality: videoMetadata.quality,
+                  aspectRatio: videoMetadata.video?.aspectRatio,
+                  fileSize: videoMetadata.format.size,
+                  bitrate: videoMetadata.format.bitrate,
+                };
+                console.log(
+                  `Extracted video metadata for ${note.name}:`,
+                  metadata
+                );
+              }
+            } catch (error) {
+              console.error(
+                `Error extracting video metadata for ${note.name}:`,
+                error
+              );
+              duration = "00:00:00"; // Default duration
             }
           }
+        }
 
-          return {
-            ...note,
-            fileType,
-            sortOrder: note.sortOrder || index,
-          };
-        })
-      : [];
+        return {
+          ...note,
+          fileType,
+          duration,
+          metadata,
+          sortOrder: note.sortOrder || index,
+        };
+      })
+    );
 
     const courseData = {
       ...data,
@@ -200,6 +233,7 @@ async function updateCategoryMetadata(categoryId) {
 
     let totalPDFs = 0;
     let totalVideos = 0;
+    let totalDuration = 0; // in seconds
 
     courses.forEach((course) => {
       course.notes.forEach((note) => {
@@ -207,6 +241,9 @@ async function updateCategoryMetadata(categoryId) {
           totalPDFs++;
         } else if (note.fileType === "video") {
           totalVideos++;
+          if (note.metadata?.durationSeconds) {
+            totalDuration += note.metadata.durationSeconds;
+          }
         }
       });
     });
@@ -216,6 +253,7 @@ async function updateCategoryMetadata(categoryId) {
         "metadata.totalCourses": courses.length,
         "metadata.totalPDFs": totalPDFs,
         "metadata.totalVideos": totalVideos,
+        "metadata.totalDuration": totalDuration,
         "metadata.lastUpdated": new Date(),
       },
     });

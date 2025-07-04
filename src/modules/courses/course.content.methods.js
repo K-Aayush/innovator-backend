@@ -1,9 +1,36 @@
 const Course = require("./courses.model");
+const Enrollment = require("./enrollment.model");
 const User = require("../user/user.model");
 const GenRes = require("../../utils/routers/GenRes");
 const { isValidObjectId } = require("mongoose");
 const path = require("path");
 const fs = require("fs");
+
+// Check if user has access to course content
+async function checkCourseAccess(userId, courseId) {
+  try {
+    const enrollment = await Enrollment.findOne({
+      "student._id": userId,
+      "course._id": courseId,
+      status: { $in: ["active", "completed"] },
+    });
+
+    if (!enrollment) return false;
+
+    // Check if access has expired
+    if (
+      enrollment.accessSettings.expiryDate &&
+      new Date() > enrollment.accessSettings.expiryDate
+    ) {
+      return false;
+    }
+
+    return true;
+  } catch (error) {
+    console.error("Error checking course access:", error);
+    return false;
+  }
+}
 
 // Get course PDFs
 const GetCoursePDFs = async (req, res) => {
@@ -29,7 +56,7 @@ const GetCoursePDFs = async (req, res) => {
         );
     }
 
-    // Check if user has access (you can implement payment/enrollment logic here)
+    // Check if user has access
     const hasAccess = await checkCourseAccess(user._id, courseId);
 
     const pageNum = parseInt(page);
@@ -45,9 +72,22 @@ const GetCoursePDFs = async (req, res) => {
     // Apply pagination
     const paginatedPDFs = pdfNotes.slice(startIndex, endIndex);
 
+    // Get user's progress for this course
+    let userProgress = null;
+    if (hasAccess) {
+      const enrollment = await Enrollment.findOne({
+        "student._id": user._id,
+        "course._id": courseId,
+      }).select("progress");
+      userProgress = enrollment?.progress;
+    }
+
     // Process PDFs based on access level
     const processedPDFs = paginatedPDFs.map((note) => {
       const isAccessible = hasAccess || !note.premium;
+      const isCompleted = userProgress?.completedNotes.some(
+        (cn) => cn.noteId === note._id.toString()
+      );
 
       return {
         _id: note._id,
@@ -55,6 +95,7 @@ const GetCoursePDFs = async (req, res) => {
         pdf: isAccessible ? note.pdf : null,
         premium: note.premium,
         accessible: isAccessible,
+        completed: isCompleted || false,
         preview: isAccessible
           ? null
           : "Premium content - Purchase course to access",
@@ -62,6 +103,8 @@ const GetCoursePDFs = async (req, res) => {
         downloadUrl: isAccessible
           ? `/api/v1/courses/download-pdf/${courseId}/${note._id}`
           : null,
+        description: note.description,
+        sortOrder: note.sortOrder,
       };
     });
 
@@ -88,6 +131,7 @@ const GetCoursePDFs = async (req, res) => {
             accessibleCount: processedPDFs.filter((pdf) => pdf.accessible)
               .length,
             totalCount: pdfNotes.length,
+            completedCount: processedPDFs.filter((pdf) => pdf.completed).length,
           },
         },
         null,
@@ -138,8 +182,21 @@ const GetCourseVideos = async (req, res) => {
 
     const paginatedVideos = videoNotes.slice(startIndex, endIndex);
 
+    // Get user's progress for this course
+    let userProgress = null;
+    if (hasAccess) {
+      const enrollment = await Enrollment.findOne({
+        "student._id": user._id,
+        "course._id": courseId,
+      }).select("progress");
+      userProgress = enrollment?.progress;
+    }
+
     const processedVideos = paginatedVideos.map((note) => {
       const isAccessible = hasAccess || !note.premium;
+      const isCompleted = userProgress?.completedNotes.some(
+        (cn) => cn.noteId === note._id.toString()
+      );
 
       return {
         _id: note._id,
@@ -147,6 +204,7 @@ const GetCourseVideos = async (req, res) => {
         video: isAccessible ? note.pdf : null, // pdf field contains video path
         premium: note.premium,
         accessible: isAccessible,
+        completed: isCompleted || false,
         preview: isAccessible
           ? null
           : "Premium content - Purchase course to access",
@@ -158,6 +216,8 @@ const GetCourseVideos = async (req, res) => {
         downloadUrl: isAccessible
           ? `/api/v1/courses/download-video/${courseId}/${note._id}`
           : null,
+        description: note.description,
+        sortOrder: note.sortOrder,
       };
     });
 
@@ -184,6 +244,8 @@ const GetCourseVideos = async (req, res) => {
             accessibleCount: processedVideos.filter((video) => video.accessible)
               .length,
             totalCount: videoNotes.length,
+            completedCount: processedVideos.filter((video) => video.completed)
+              .length,
           },
         },
         null,
@@ -240,7 +302,26 @@ const DownloadPDF = async (req, res) => {
             403,
             null,
             { error: "Access denied" },
-            "Premium content requires course purchase"
+            "Premium content requires course enrollment"
+          )
+        );
+    }
+
+    // Check download permissions
+    const enrollment = await Enrollment.findOne({
+      "student._id": user._id,
+      "course._id": courseId,
+    });
+
+    if (enrollment && !enrollment.accessSettings.downloadAllowed) {
+      return res
+        .status(403)
+        .json(
+          GenRes(
+            403,
+            null,
+            { error: "Download not allowed" },
+            "Downloads are not permitted for this course"
           )
         );
     }
@@ -268,6 +349,12 @@ const DownloadPDF = async (req, res) => {
 
     const fileStream = fs.createReadStream(filePath);
     fileStream.pipe(res);
+
+    // Track download activity
+    if (enrollment) {
+      // You could add download tracking here
+      console.log(`PDF downloaded: ${note.name} by user ${user._id}`);
+    }
   } catch (error) {
     console.error("Error downloading PDF:", error);
     return res.status(500).json(GenRes(500, null, error, error?.message));
@@ -320,7 +407,26 @@ const DownloadVideo = async (req, res) => {
             403,
             null,
             { error: "Access denied" },
-            "Premium content requires course purchase"
+            "Premium content requires course enrollment"
+          )
+        );
+    }
+
+    // Check download permissions
+    const enrollment = await Enrollment.findOne({
+      "student._id": user._id,
+      "course._id": courseId,
+    });
+
+    if (enrollment && !enrollment.accessSettings.downloadAllowed) {
+      return res
+        .status(403)
+        .json(
+          GenRes(
+            403,
+            null,
+            { error: "Download not allowed" },
+            "Downloads are not permitted for this course"
           )
         );
     }
@@ -368,6 +474,11 @@ const DownloadVideo = async (req, res) => {
       res.writeHead(200, head);
       fs.createReadStream(filePath).pipe(res);
     }
+
+    // Track download activity
+    if (enrollment) {
+      console.log(`Video downloaded: ${note.name} by user ${user._id}`);
+    }
   } catch (error) {
     console.error("Error downloading video:", error);
     return res.status(500).json(GenRes(500, null, error, error?.message));
@@ -375,10 +486,6 @@ const DownloadVideo = async (req, res) => {
 };
 
 // Helper functions
-async function checkCourseAccess(userId, courseId) {
-  return false;
-}
-
 function getFileSize(filePath) {
   try {
     const fullPath = path.join(process.cwd(), filePath.substring(1));
@@ -412,7 +519,6 @@ function isVideoFile(filePath) {
 }
 
 function generateVideoThumbnail(videoPath) {
-  // Generate thumbnail path based on video path
   const basePath = videoPath.replace(/\.[^/.]+$/, "");
   return `${basePath}_thumbnail.jpg`;
 }

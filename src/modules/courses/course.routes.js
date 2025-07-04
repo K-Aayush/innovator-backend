@@ -18,6 +18,23 @@ const {
   DeleteCourseCategory,
   GetCategoryHierarchy,
 } = require("./course.category.methods");
+const {
+  EnrollInCourse,
+  GetUserEnrollments,
+  UpdateCourseProgress,
+  GetCourseProgress,
+  AddPersonalNote,
+  SubmitCourseFeedback,
+  GetEnrollmentAnalytics,
+} = require("./enrollment.methods");
+
+const {
+  SubmitCourseRating,
+  GetCourseRatings,
+  MarkRatingHelpful,
+  GetUserCourseRating,
+  DeleteCourseRating,
+} = require("./rating.methods");
 
 const route = require("express").Router();
 
@@ -62,6 +79,35 @@ route.post("/add-course", basicMiddleware, AddCourse);
 route.put("/update-course/:id", basicMiddleware, UpdateCourse);
 route.delete("/delete-courses/:id", basicMiddleware, DelCourses);
 
+// Course enrollment routes
+route.post("/courses/:courseId/enroll", basicMiddleware, EnrollInCourse);
+route.get("/my-enrollments", basicMiddleware, GetUserEnrollments);
+
+// Course progress tracking routes
+route.post(
+  "/courses/:courseId/progress",
+  basicMiddleware,
+  UpdateCourseProgress
+);
+route.get("/courses/:courseId/progress", basicMiddleware, GetCourseProgress);
+
+// Course feedback and rating
+route.post(
+  "/courses/:courseId/feedback",
+  basicMiddleware,
+  SubmitCourseFeedback
+);
+
+// Course analytics
+route.get(
+  "/courses/:courseId/analytics",
+  basicMiddleware,
+  GetEnrollmentAnalytics
+);
+
+// Personal notes for courses
+route.post("/courses/:courseId/notes", basicMiddleware, AddPersonalNote);
+
 // List courses
 route.get("/list-courses", basicMiddleware, ListCourses);
 
@@ -85,5 +131,12 @@ route.get(
   basicMiddleware,
   DownloadVideo
 );
+
+// Course rating and review system
+route.post("/courses/:courseId/rating", basicMiddleware, SubmitCourseRating);
+route.get("/courses/:courseId/ratings", basicMiddleware, GetCourseRatings);
+route.get("/courses/:courseId/my-rating", basicMiddleware, GetUserCourseRating);
+route.delete("/courses/:courseId/rating", basicMiddleware, DeleteCourseRating);
+route.post("/ratings/:ratingId/helpful", basicMiddleware, MarkRatingHelpful);
 
 module.exports = route;

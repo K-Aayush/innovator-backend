@@ -610,7 +610,7 @@ const generateInfiniteContent = async (
 
       const now = Date.now();
       selectedContent.forEach((item) => {
-        const age = now - new Date(item.createdAt).getTime();
+        const age = now - new Date(item.createdAt).getTime();  
         const ageInDays = age / (1000 * 60 * 60 * 24);
 
         // Boost recent content if user is active now

@@ -11,7 +11,15 @@ const FCMHandler = require("../../utils/notification/fcmHandler");
 const SubmitCourseRating = async (req, res) => {
   try {
     const { courseId } = req.params;
-    const { rating, review = {}, deviceType, platform } = req.body;
+    const {
+      rating,
+      review = {},
+      deviceType,
+      platform,
+      wouldRecommend = true,
+      difficultyLevel,
+      valueForMoney,
+    } = req.body;
     const userId = req.user._id;
 
     // Validate rating
@@ -23,7 +31,7 @@ const SubmitCourseRating = async (req, res) => {
             400,
             null,
             { error: "Invalid rating" },
-            "Rating must be between 1 and 5"
+            "Rating must be between 1 and 5 stars"
           )
         );
     }
@@ -37,7 +45,7 @@ const SubmitCourseRating = async (req, res) => {
     }
 
     // Check if course exists
-    const course = await Course.findById(courseId).select("title author");
+    const course = await Course.findById(courseId).select("title author price");
     if (!course) {
       return res
         .status(404)
@@ -65,8 +73,10 @@ const SubmitCourseRating = async (req, res) => {
         );
     }
 
-    // Check if user has sufficient progress (at least 25%)
-    if (enrollment.progress.completionPercentage < 25) {
+    const isFree = !course.price?.usd || course.price.usd === 0;
+    const minimumProgress = isFree ? 0 : 25;
+
+    if (enrollment.progress.completionPercentage < minimumProgress) {
       return res
         .status(400)
         .json(
@@ -74,7 +84,7 @@ const SubmitCourseRating = async (req, res) => {
             400,
             null,
             { error: "Insufficient progress" },
-            "Complete at least 25% of the course to submit a rating"
+            `Complete at least ${minimumProgress}% of the course to submit a rating`
           )
         );
     }
@@ -94,6 +104,9 @@ const SubmitCourseRating = async (req, res) => {
       // Update existing rating
       existingRating.rating = rating;
       existingRating.review = review;
+      existingRating.wouldRecommend = wouldRecommend;
+      existingRating.difficultyLevel = difficultyLevel;
+      existingRating.valueForMoney = valueForMoney;
       existingRating.courseProgress = {
         completionPercentage: enrollment.progress.completionPercentage,
         timeSpent: enrollment.progress.totalTimeSpent,
@@ -101,7 +114,8 @@ const SubmitCourseRating = async (req, res) => {
       existingRating.metadata = {
         deviceType,
         platform,
-        courseVersion: "1.0", 
+        courseVersion: "1.0",
+        isFree,
       };
 
       courseRating = await existingRating.save();
@@ -121,6 +135,9 @@ const SubmitCourseRating = async (req, res) => {
         },
         rating,
         review,
+        wouldRecommend,
+        difficultyLevel,
+        valueForMoney,
         verified: true, // Since they're enrolled
         courseProgress: {
           completionPercentage: enrollment.progress.completionPercentage,
@@ -130,6 +147,7 @@ const SubmitCourseRating = async (req, res) => {
           deviceType,
           platform,
           courseVersion: "1.0",
+          isFree,
         },
       });
 
@@ -188,7 +206,7 @@ const SubmitCourseRating = async (req, res) => {
   }
 };
 
-// Get course ratings with pagination and filtering
+// Get course ratings with enhanced filtering
 const GetCourseRatings = async (req, res) => {
   try {
     const { courseId } = req.params;
@@ -199,6 +217,7 @@ const GetCourseRatings = async (req, res) => {
       sortBy = "createdAt",
       sortOrder = "desc",
       verified,
+      withReviews = false,
     } = req.query;
 
     if (!isValidObjectId(courseId)) {
@@ -209,9 +228,10 @@ const GetCourseRatings = async (req, res) => {
         );
     }
 
-    const pageNum = parseInt(page);
-    const limitNum = Math.min(parseInt(limit), 50);
+    const pageNum = parseInt(page, 10) || 0;
+    const limitNum = Math.min(parseInt(limit, 10) || 10, 50);
 
+    // Build filters
     const filters = {
       "course._id": courseId,
       status: "active",
@@ -223,6 +243,10 @@ const GetCourseRatings = async (req, res) => {
 
     if (verified === "true") {
       filters.verified = true;
+    }
+
+    if (withReviews === "true") {
+      filters["review.content"] = { $exists: true, $ne: "" };
     }
 
     const sortDirection = sortOrder === "desc" ? -1 : 1;
@@ -270,6 +294,13 @@ const GetCourseRatings = async (req, res) => {
           totalRatings
         : 0;
 
+    // Calculate additional statistics
+    const recommendationRate =
+      (await CourseRating.countDocuments({
+        "course._id": courseId,
+        wouldRecommend: true,
+      })) / Math.max(totalRatings, 1);
+
     // Enrich ratings with helpful status for current user
     const enrichedRatings = ratings.map((rating) => ({
       ...rating,
@@ -294,6 +325,8 @@ const GetCourseRatings = async (req, res) => {
             totalRatings,
             ratingDistribution,
             verifiedCount: ratings.filter((r) => r.verified).length,
+            recommendationRate: Math.round(recommendationRate * 100),
+            reviewsCount: ratings.filter((r) => r.review?.content).length,
           },
         },
         null,
@@ -446,6 +479,9 @@ async function updateCourseRatingStats(courseId) {
           _id: null,
           averageRating: { $avg: "$rating" },
           totalRatings: { $sum: 1 },
+          recommendationRate: {
+            $avg: { $cond: ["$wouldRecommend", 1, 0] },
+          },
           ratingDistribution: {
             $push: "$rating",
           },
@@ -459,14 +495,17 @@ async function updateCourseRatingStats(courseId) {
         $set: {
           "rating.average": Math.round(stats.averageRating * 10) / 10,
           "rating.count": stats.totalRatings,
+          "rating.recommendationRate": Math.round(
+            stats.recommendationRate * 100
+          ),
         },
       });
     } else {
-  
       await Course.findByIdAndUpdate(courseId, {
         $set: {
           "rating.average": 0,
           "rating.count": 0,
+          "rating.recommendationRate": 0,
         },
       });
     }

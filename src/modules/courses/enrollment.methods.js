@@ -6,7 +6,7 @@ const User = require("../user/user.model");
 const Notification = require("../notifications/notification.model");
 const FCMHandler = require("../../utils/notification/fcmHandler");
 
-// Enroll in course
+// Enroll in course with free course handling
 const EnrollInCourse = async (req, res) => {
   try {
     const { courseId } = req.params;
@@ -69,15 +69,18 @@ const EnrollInCourse = async (req, res) => {
       "_id email name picture phone"
     );
 
+    // Check if course is free
+    const isFree = !course.price?.usd || course.price.usd === 0;
+
     // Calculate access expiry date
     let expiryDate = null;
-    if (accessDuration) {
+    if (accessDuration && !isFree) {
       expiryDate = new Date();
       expiryDate.setDate(expiryDate.getDate() + accessDuration);
     }
 
-    // Create enrollment
-    const enrollment = new Enrollment({
+    // Create enrollment with appropriate payment info
+    const enrollmentData = {
       student: student.toObject(),
       course: {
         _id: course._id.toString(),
@@ -87,22 +90,52 @@ const EnrollInCourse = async (req, res) => {
         totalNotes: course.notes?.length || 0,
         category: course.category,
         author: course.author,
-      },
-      paymentInfo: paymentInfo || {
-        amount: course.price?.usd || 0,
-        currency: "USD",
-        paymentMethod: "free",
-        paymentDate: new Date(),
-        paymentStatus: "completed",
+        isFree,
       },
       accessSettings: {
         expiryDate,
         maxDevices: 3,
-        downloadAllowed: course.price?.usd === 0, 
+        downloadAllowed: isFree || course.price?.usd === 0, // Free courses allow downloads
         offlineAccess: true,
       },
-    });
+    };
 
+    // Handle payment info based on course type
+    if (isFree) {
+      enrollmentData.paymentInfo = {
+        amount: 0,
+        currency: "USD",
+        paymentMethod: "free",
+        paymentDate: new Date(),
+        paymentStatus: "completed",
+        transactionId: `FREE_${Date.now()}`,
+      };
+    } else {
+      // Validate payment info for paid courses
+      if (!paymentInfo || !paymentInfo.amount || paymentInfo.amount <= 0) {
+        return res
+          .status(400)
+          .json(
+            GenRes(
+              400,
+              null,
+              { error: "Payment required" },
+              "Payment information required for paid courses"
+            )
+          );
+      }
+
+      enrollmentData.paymentInfo = {
+        amount: paymentInfo.amount || course.price?.usd || 0,
+        currency: paymentInfo.currency || "USD",
+        paymentMethod: paymentInfo.paymentMethod || "unknown",
+        paymentDate: new Date(),
+        paymentStatus: paymentInfo.paymentStatus || "completed",
+        transactionId: paymentInfo.transactionId,
+      };
+    }
+
+    const enrollment = new Enrollment(enrollmentData);
     await enrollment.save();
 
     // Update course enrollment count
@@ -123,11 +156,14 @@ const EnrollInCourse = async (req, res) => {
         picture: student.picture,
       },
       type: "course",
-      content: `${student.name} enrolled in your course: ${course.title}`,
+      content: `${student.name} enrolled in your course: ${course.title}${
+        isFree ? " (Free)" : ""
+      }`,
       metadata: {
         itemId: courseId,
         itemType: "course",
         enrollmentId: enrollment._id.toString(),
+        isFree,
       },
     });
 
@@ -137,27 +173,38 @@ const EnrollInCourse = async (req, res) => {
     try {
       await FCMHandler.sendToUser(course.author._id, {
         title: "New Course Enrollment",
-        body: `${student.name} enrolled in ${course.title}`,
+        body: `${student.name} enrolled in ${course.title}${
+          isFree ? " (Free Course)" : ""
+        }`,
         type: "course_enrollment",
         data: {
           courseId,
           enrollmentId: enrollment._id.toString(),
+          isFree: isFree.toString(),
         },
       });
     } catch (fcmError) {
       console.error("Failed to send FCM notification:", fcmError);
     }
 
-    return res
-      .status(201)
-      .json(GenRes(201, enrollment, null, "Successfully enrolled in course"));
+    return res.status(201).json(
+      GenRes(
+        201,
+        {
+          ...enrollment.toObject(),
+          enrollmentType: isFree ? "free" : "paid",
+        },
+        null,
+        `Successfully enrolled in ${isFree ? "free" : "paid"} course`
+      )
+    );
   } catch (error) {
     console.error("Error enrolling in course:", error);
     return res.status(500).json(GenRes(500, null, error, error?.message));
   }
 };
 
-// Get user's enrollments
+// Get user's enrollments with enhanced filtering
 const GetUserEnrollments = async (req, res) => {
   try {
     const {
@@ -166,6 +213,7 @@ const GetUserEnrollments = async (req, res) => {
       status,
       sortBy = "enrollmentDate",
       sortOrder = "desc",
+      courseType = "all", // all, free, paid
     } = req.query;
     const userId = req.user._id;
 
@@ -175,6 +223,13 @@ const GetUserEnrollments = async (req, res) => {
     const filters = { "student._id": userId };
     if (status) {
       filters.status = status;
+    }
+
+    // Filter by course type
+    if (courseType === "free") {
+      filters["course.isFree"] = true;
+    } else if (courseType === "paid") {
+      filters["course.isFree"] = { $ne: true };
     }
 
     const sortDirection = sortOrder === "desc" ? -1 : 1;
@@ -189,7 +244,7 @@ const GetUserEnrollments = async (req, res) => {
       Enrollment.countDocuments(filters),
     ]);
 
-    // Enrich with additional course data
+    // Enrich with additional course data and progress insights
     const enrichedEnrollments = enrollments.map((enrollment) => ({
       ...enrollment,
       progressSummary: {
@@ -205,8 +260,47 @@ const GetUserEnrollments = async (req, res) => {
                   enrollment.progress.completedNotes.length
               )
             : 0,
+        canRate:
+          enrollment.progress.completionPercentage >=
+          (enrollment.course.isFree ? 0 : 25),
+        estimatedTimeToComplete: calculateEstimatedTimeToComplete(enrollment),
+      },
+      accessInfo: {
+        hasExpired:
+          enrollment.accessSettings.expiryDate &&
+          new Date() > enrollment.accessSettings.expiryDate,
+        daysUntilExpiry: enrollment.accessSettings.expiryDate
+          ? Math.ceil(
+              (enrollment.accessSettings.expiryDate - new Date()) /
+                (1000 * 60 * 60 * 24)
+            )
+          : null,
+        canDownload: enrollment.accessSettings.downloadAllowed,
       },
     }));
+
+    // Calculate summary statistics
+    const summary = {
+      totalEnrollments: total,
+      freeEnrollments: enrollments.filter((e) => e.course.isFree).length,
+      paidEnrollments: enrollments.filter((e) => !e.course.isFree).length,
+      activeEnrollments: enrollments.filter((e) => e.status === "active")
+        .length,
+      completedEnrollments: enrollments.filter(
+        (e) => e.progress.completionPercentage >= 100
+      ).length,
+      totalTimeSpent: enrollments.reduce(
+        (sum, e) => sum + (e.progress.totalTimeSpent || 0),
+        0
+      ),
+      averageProgress:
+        enrollments.length > 0
+          ? enrollments.reduce(
+              (sum, e) => sum + e.progress.completionPercentage,
+              0
+            ) / enrollments.length
+          : 0,
+    };
 
     return res.status(200).json(
       GenRes(
@@ -220,14 +314,7 @@ const GetUserEnrollments = async (req, res) => {
             pages: Math.ceil(total / limitNum),
             hasMore: (pageNum + 1) * limitNum < total,
           },
-          summary: {
-            totalEnrollments: total,
-            activeEnrollments: enrollments.filter((e) => e.status === "active")
-              .length,
-            completedEnrollments: enrollments.filter(
-              (e) => e.progress.completionPercentage >= 100
-            ).length,
-          },
+          summary,
         },
         null,
         `Retrieved ${enrollments.length} enrollments`
@@ -239,11 +326,32 @@ const GetUserEnrollments = async (req, res) => {
   }
 };
 
-// Update course progress
+// Helper function to calculate estimated time to complete
+function calculateEstimatedTimeToComplete(enrollment) {
+  const { completionPercentage, totalTimeSpent, completedNotes } =
+    enrollment.progress;
+  const { totalNotes } = enrollment.course;
+
+  if (completionPercentage >= 100) return 0;
+  if (completedNotes.length === 0) return null;
+
+  const averageTimePerNote = totalTimeSpent / completedNotes.length;
+  const remainingNotes = totalNotes - completedNotes.length;
+
+  return Math.round((averageTimePerNote * remainingNotes) / 60); // Return in minutes
+}
+
+// Update course progress with enhanced tracking
 const UpdateCourseProgress = async (req, res) => {
   try {
     const { courseId } = req.params;
-    const { noteId, completed = true, timeSpent = 0 } = req.body;
+    const {
+      noteId,
+      completed = true,
+      timeSpent = 0,
+      difficulty,
+      notes,
+    } = req.body;
     const userId = req.user._id;
 
     if (!isValidObjectId(courseId) || !isValidObjectId(noteId)) {
@@ -278,8 +386,9 @@ const UpdateCourseProgress = async (req, res) => {
         );
     }
 
-    // Check if access has expired
+    // Check if access has expired (only for paid courses)
     if (
+      !enrollment.course.isFree &&
       enrollment.accessSettings.expiryDate &&
       new Date() > enrollment.accessSettings.expiryDate
     ) {
@@ -327,12 +436,21 @@ const UpdateCourseProgress = async (req, res) => {
           completedAt: new Date(),
           timeSpent,
           attempts: 1,
+          difficulty,
+          notes,
         });
       } else {
         // Update existing note
         enrollment.progress.completedNotes[existingNoteIndex].timeSpent +=
           timeSpent;
         enrollment.progress.completedNotes[existingNoteIndex].attempts += 1;
+        if (difficulty) {
+          enrollment.progress.completedNotes[existingNoteIndex].difficulty =
+            difficulty;
+        }
+        if (notes) {
+          enrollment.progress.completedNotes[existingNoteIndex].notes = notes;
+        }
       }
     } else {
       // Remove from completed notes
@@ -352,7 +470,7 @@ const UpdateCourseProgress = async (req, res) => {
 
     // Check if course is completed
     const wasCompleted = enrollment.progress.completionPercentage >= 100;
-    await enrollment.save(); 
+    await enrollment.save();
 
     const isNowCompleted = enrollment.progress.completionPercentage >= 100;
 
@@ -374,6 +492,7 @@ const UpdateCourseProgress = async (req, res) => {
           data: {
             courseId,
             certificateId: enrollment.certificate.certificateId,
+            isFree: enrollment.course.isFree.toString(),
           },
         });
       } catch (fcmError) {
@@ -389,6 +508,9 @@ const UpdateCourseProgress = async (req, res) => {
           certificate: enrollment.certificate,
           status: enrollment.status,
           justCompleted: !wasCompleted && isNowCompleted,
+          canRate:
+            enrollment.progress.completionPercentage >=
+            (enrollment.course.isFree ? 0 : 25),
         },
         null,
         "Progress updated successfully"
@@ -452,6 +574,22 @@ const GetCourseProgress = async (req, res) => {
                     enrollment.progress.completedNotes.length
                 )
               : 0,
+          canRate:
+            enrollment.progress.completionPercentage >=
+            (enrollment.course.isFree ? 0 : 25),
+          estimatedTimeToComplete: calculateEstimatedTimeToComplete(enrollment),
+        },
+        accessInfo: {
+          hasExpired:
+            enrollment.accessSettings.expiryDate &&
+            new Date() > enrollment.accessSettings.expiryDate,
+          daysUntilExpiry: enrollment.accessSettings.expiryDate
+            ? Math.ceil(
+                (enrollment.accessSettings.expiryDate - new Date()) /
+                  (1000 * 60 * 60 * 24)
+              )
+            : null,
+          canDownload: enrollment.accessSettings.downloadAllowed,
         },
       },
       courseNotes: course.notes.map((note) => {
@@ -467,6 +605,8 @@ const GetCourseProgress = async (req, res) => {
           completedAt: completedNote?.completedAt,
           timeSpent: completedNote?.timeSpent || 0,
           attempts: completedNote?.attempts || 0,
+          difficulty: completedNote?.difficulty,
+          notes: completedNote?.notes,
         };
       }),
     };
@@ -486,7 +626,7 @@ const GetCourseProgress = async (req, res) => {
 const AddPersonalNote = async (req, res) => {
   try {
     const { courseId } = req.params;
-    const { content, noteType = "personal" } = req.body;
+    const { content, noteType = "personal", noteId } = req.body;
     const userId = req.user._id;
 
     if (!content) {
@@ -523,6 +663,7 @@ const AddPersonalNote = async (req, res) => {
     enrollment.notes.push({
       content,
       noteType,
+      noteId, // Reference to specific course note if applicable
       createdAt: new Date(),
     });
 
@@ -541,7 +682,7 @@ const AddPersonalNote = async (req, res) => {
 const SubmitCourseFeedback = async (req, res) => {
   try {
     const { courseId } = req.params;
-    const { rating, review } = req.body;
+    const { rating, review, suggestions } = req.body;
     const userId = req.user._id;
 
     if (!rating || rating < 1 || rating > 5) {
@@ -575,8 +716,11 @@ const SubmitCourseFeedback = async (req, res) => {
         );
     }
 
-    // Check if course is at least 50% completed
-    if (enrollment.progress.completionPercentage < 50) {
+    // For free courses, allow feedback immediately
+    // For paid courses, require at least 50% completion
+    const minimumProgress = enrollment.course.isFree ? 0 : 50;
+
+    if (enrollment.progress.completionPercentage < minimumProgress) {
       return res
         .status(400)
         .json(
@@ -584,7 +728,7 @@ const SubmitCourseFeedback = async (req, res) => {
             400,
             null,
             { error: "Insufficient progress" },
-            "Complete at least 50% of the course to submit feedback"
+            `Complete at least ${minimumProgress}% of the course to submit feedback`
           )
         );
     }
@@ -592,6 +736,7 @@ const SubmitCourseFeedback = async (req, res) => {
     enrollment.feedback = {
       rating,
       review,
+      suggestions,
       reviewDate: new Date(),
     };
 
@@ -668,6 +813,12 @@ const GetEnrollmentAnalytics = async (req, res) => {
         $group: {
           _id: null,
           totalEnrollments: { $sum: 1 },
+          freeEnrollments: {
+            $sum: { $cond: ["$course.isFree", 1, 0] },
+          },
+          paidEnrollments: {
+            $sum: { $cond: [{ $not: "$course.isFree" }, 1, 0] },
+          },
           activeEnrollments: {
             $sum: { $cond: [{ $eq: ["$status", "active"] }, 1, 0] },
           },
@@ -691,6 +842,7 @@ const GetEnrollmentAnalytics = async (req, res) => {
           _id: {
             year: { $year: "$enrollmentDate" },
             month: { $month: "$enrollmentDate" },
+            type: { $cond: ["$course.isFree", "free", "paid"] },
           },
           count: { $sum: 1 },
         },

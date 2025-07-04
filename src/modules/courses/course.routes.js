@@ -28,6 +28,14 @@ const {
   GetEnrollmentAnalytics,
 } = require("./enrollment.methods");
 
+const {
+  SubmitCourseRating,
+  GetCourseRatings,
+  MarkRatingHelpful,
+  GetUserCourseRating,
+  DeleteCourseRating,
+} = require("./rating.methods");
+
 const route = require("express").Router();
 
 // Course Category Management (Admin only)
@@ -123,5 +131,12 @@ route.get(
   basicMiddleware,
   DownloadVideo
 );
+
+// Course rating and review system
+route.post("/courses/:courseId/rating", basicMiddleware, SubmitCourseRating);
+route.get("/courses/:courseId/ratings", basicMiddleware, GetCourseRatings);
+route.get("/courses/:courseId/my-rating", basicMiddleware, GetUserCourseRating);
+route.delete("/courses/:courseId/rating", basicMiddleware, DeleteCourseRating);
+route.post("/ratings/:ratingId/helpful", basicMiddleware, MarkRatingHelpful);
 
 module.exports = route;

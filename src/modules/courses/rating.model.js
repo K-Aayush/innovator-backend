@@ -26,11 +26,25 @@ const CourseRatingSchema = new Schema(
       pros: [String],
       cons: [String],
     },
+    // App store style additional fields
+    wouldRecommend: {
+      type: Boolean,
+      default: true,
+    },
+    difficultyLevel: {
+      type: String,
+      enum: ["very_easy", "easy", "moderate", "hard", "very_hard"],
+    },
+    valueForMoney: {
+      type: Number,
+      min: 1,
+      max: 5,
+    },
     helpful: {
       count: { type: Number, default: 0 },
-      users: [String], 
+      users: [String],
     },
-    verified: { type: Boolean, default: false }, 
+    verified: { type: Boolean, default: false },
     courseProgress: {
       completionPercentage: { type: Number, default: 0 },
       timeSpent: { type: Number, default: 0 },
@@ -39,6 +53,7 @@ const CourseRatingSchema = new Schema(
       deviceType: String,
       platform: String,
       courseVersion: String,
+      isFree: { type: Boolean, default: false },
     },
     status: {
       type: String,
@@ -58,11 +73,12 @@ const CourseRatingSchema = new Schema(
       { "student._id": 1 },
       { rating: -1, createdAt: -1 },
       { "course._id": 1, "student._id": 1 },
+      { wouldRecommend: 1 },
+      { verified: 1 },
     ],
   }
 );
 
-// Compound unique index to prevent duplicate ratings from same user
 CourseRatingSchema.index(
   { "course._id": 1, "student._id": 1 },
   { unique: true }
@@ -83,6 +99,10 @@ CourseRatingSchema.virtual("timeSinceRating").get(function () {
   if (diffDays < 30) return `${diffDays} days ago`;
   if (diffDays < 365) return `${Math.floor(diffDays / 30)} months ago`;
   return `${Math.floor(diffDays / 365)} years ago`;
+});
+
+CourseRatingSchema.virtual("recommendationText").get(function () {
+  return this.wouldRecommend ? "Recommends this course" : "Does not recommend";
 });
 
 const CourseRating =

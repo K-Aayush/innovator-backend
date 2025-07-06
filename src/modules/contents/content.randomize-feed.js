@@ -4,7 +4,6 @@ const Follow = require("../follow/follow.model");
 const Like = require("../likes/likes.model");
 const Comment = require("../comments/comments.model");
 const GenRes = require("../../utils/routers/GenRes");
-const { isValidObjectId } = require("mongoose");
 const NodeCache = require("node-cache");
 
 // Cache for randomized feed optimization
@@ -610,7 +609,7 @@ const generateInfiniteContent = async (
 
       const now = Date.now();
       selectedContent.forEach((item) => {
-        const age = now - new Date(item.createdAt).getTime();  
+        const age = now - new Date(item.createdAt).getTime();
         const ageInDays = age / (1000 * 60 * 60 * 24);
 
         // Boost recent content if user is active now
@@ -738,46 +737,57 @@ const calculateUserRelevanceScore = (content, userContext) => {
   return Math.min(score, 1);
 };
 
-// Enrich content with engagement data
+// Enhanced engagement enrichment function
 const enrichContentWithEngagement = async (contents, userEmail) => {
   if (!contents.length) return [];
 
   const contentIds = contents.map((c) => c._id.toString());
 
-  const [likesData, commentsData, sharesData, userLikes, userComments] =
-    await Promise.all([
-      Like.aggregate([
-        { $match: { uid: { $in: contentIds }, type: "content" } },
-        { $group: { _id: "$uid", count: { $sum: 1 } } },
-      ]),
-      Comment.aggregate([
-        { $match: { uid: { $in: contentIds }, type: "content" } },
-        { $group: { _id: "$uid", count: { $sum: 1 } } },
-      ]),
-      Content.aggregate([
-        {
-          $match: {
-            "originalContent._id": { $in: contentIds },
-            isShared: true,
-          },
+  const [
+    likesData,
+    commentsData,
+    sharesData,
+    userLikes,
+    userComments,
+    followData,
+  ] = await Promise.all([
+    Like.aggregate([
+      { $match: { uid: { $in: contentIds }, type: "content" } },
+      { $group: { _id: "$uid", count: { $sum: 1 } } },
+    ]),
+    Comment.aggregate([
+      { $match: { uid: { $in: contentIds }, type: "content" } },
+      { $group: { _id: "$uid", count: { $sum: 1 } } },
+    ]),
+    Content.aggregate([
+      {
+        $match: {
+          "originalContent._id": { $in: contentIds },
+          isShared: true,
         },
-        { $group: { _id: "$originalContent._id", count: { $sum: 1 } } },
-      ]),
-      Like.find({
-        uid: { $in: contentIds },
-        type: "content",
-        "user.email": userEmail,
-      })
-        .select("uid")
-        .lean(),
-      Comment.find({
-        uid: { $in: contentIds },
-        type: "content",
-        "user.email": userEmail,
-      })
-        .select("uid")
-        .lean(),
-    ]);
+      },
+      { $group: { _id: "$originalContent._id", count: { $sum: 1 } } },
+    ]),
+    Like.find({
+      uid: { $in: contentIds },
+      type: "content",
+      "user.email": userEmail,
+    })
+      .select("uid")
+      .lean(),
+    Comment.find({
+      uid: { $in: contentIds },
+      type: "content",
+      "user.email": userEmail,
+    })
+      .select("uid")
+      .lean(),
+    Follow.find({
+      "follower.email": userEmail,
+    })
+      .select("following._id following.email")
+      .lean(),
+  ]);
 
   const likesMap = new Map(likesData.map((item) => [item._id, item.count]));
   const commentsMap = new Map(
@@ -786,6 +796,12 @@ const enrichContentWithEngagement = async (contents, userEmail) => {
   const sharesMap = new Map(sharesData.map((item) => [item._id, item.count]));
   const userLikesSet = new Set(userLikes.map((like) => like.uid));
   const userCommentsSet = new Set(userComments.map((comment) => comment.uid));
+  const followedEmailsSet = new Set(
+    followData.map((follow) => follow.following.email)
+  );
+  const followedIdsSet = new Set(
+    followData.map((follow) => follow.following._id)
+  );
 
   return contents.map((content) => {
     const contentId = content._id.toString();
@@ -797,6 +813,19 @@ const enrichContentWithEngagement = async (contents, userEmail) => {
     return {
       ...content,
       contentType: determineContentType(content.files),
+
+      // Engagement data (matching your expected format)
+      likes,
+      comments,
+      shares,
+      views,
+      liked: userLikesSet.has(contentId),
+      commented: userCommentsSet.has(contentId),
+      followed:
+        followedEmailsSet.has(content.author.email) ||
+        followedIdsSet.has(content.author._id),
+
+      // Additional engagement metrics
       engagement: {
         likes,
         comments,
@@ -812,6 +841,11 @@ const enrichContentWithEngagement = async (contents, userEmail) => {
           content.createdAt
         ),
       },
+
+      // Engagement rate calculation
+      engagementRate:
+        views > 0 ? ((likes + comments * 2 + shares * 3) / views) * 100 : 0,
+
       infiniteScore:
         (content.randomSeed || Math.random()) * 0.4 +
         (content.userRelevanceScore || 0.5) * 0.6,
@@ -882,7 +916,7 @@ const GetRandomizedFeed = async (req, res) => {
       currentRotationCycle
     );
 
-    // Enrich with engagement data
+    // Enrich with engagement data (THIS IS THE KEY FIX)
     const enrichedContent = await enrichContentWithEngagement(
       fetchedContent,
       userEmail
@@ -985,6 +1019,22 @@ const GetRandomizedFeed = async (req, res) => {
         autoplay: index < 3,
         isResurfaced: seenContent.has(item._id.toString()),
         userRelevance: item.userRelevanceScore || 0.5,
+
+        // Video-specific metadata (matching your expected format)
+        videoMetadata: {
+          quality: "medium",
+          autoplay: index < 3,
+          preload: "auto",
+          muted: true,
+          loop: false,
+          controls: true,
+        },
+        thumbnailUrl: item.files?.[0]
+          ? item.files[0].replace(/\.[^/.]+$/, "") + "_thumbnail.jpg"
+          : null,
+        hlsUrl: item.files?.[0]
+          ? item.files[0].replace(/\.[^/.]+$/, "") + "/playlist.m3u8"
+          : null,
       })),
       hasMore,
       nextCursor,

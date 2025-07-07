@@ -1,6 +1,12 @@
 const basicMiddleware = require("../../middlewares/basicMiddleware");
 const AdminFiles = require("../../utils/fileProcessor/multer.courses");
-const { AddCourse, DelCourses } = require("./course.admin.methods");
+const {
+  AddCourse,
+  DelCourses,
+  AddLessonToCourse,
+  AddNoteToCourse,
+  AddVideoToCourse,
+} = require("./course.admin.methods");
 const { MultipleFiles, DeleteFiles } = require("./course.file");
 const { ListCourses, GetCourseById } = require("./courses.list");
 const { UpdateCourse } = require("./course.update.methods");
@@ -17,7 +23,15 @@ const {
   UpdateCourseCategory,
   DeleteCourseCategory,
   GetCategoryHierarchy,
-} = require("./course.category.methods"); 
+} = require("./course.category.methods");
+const {
+  GetParentCategories,
+  GetSubcategories,
+  GetSubcategoryCourses,
+  GetCourseWithLessons,
+  GetNotesByParentCategory,
+  GetCategoryHierarchy: GetHierarchy,
+} = require("./course.hierarchy.methods");
 const {
   EnrollInCourse,
   GetUserEnrollments,
@@ -58,6 +72,14 @@ route.delete(
   DeleteCourseCategory
 );
 
+// New Hierarchy Routes
+route.get("/parent-categories", GetParentCategories);
+route.get("/parent-categories/:parentId/subcategories", GetSubcategories);
+route.get("/subcategories/:subcategoryId/courses", GetSubcategoryCourses);
+route.get("/courses/:courseId/lessons", basicMiddleware, GetCourseWithLessons);
+route.get("/parent-categories/:parentId/notes", GetNotesByParentCategory);
+route.get("/hierarchy", GetHierarchy);
+
 // File uploads
 route.post(
   "/add-public-course-file",
@@ -78,6 +100,11 @@ route.delete("/delete-course-files", basicMiddleware, DeleteFiles);
 route.post("/add-course", basicMiddleware, AddCourse);
 route.put("/update-course/:id", basicMiddleware, UpdateCourse);
 route.delete("/delete-courses/:id", basicMiddleware, DelCourses);
+
+// Course content management
+route.post("/courses/:courseId/lessons", basicMiddleware, AddLessonToCourse);
+route.post("/courses/:courseId/notes", basicMiddleware, AddNoteToCourse);
+route.post("/courses/:courseId/videos", basicMiddleware, AddVideoToCourse);
 
 // Course enrollment routes
 route.post("/courses/:courseId/enroll", basicMiddleware, EnrollInCourse);

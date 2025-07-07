@@ -13,6 +13,8 @@ const CourseCategorySchema = new Schema(
       type: String,
       default: "#4A90E2",
     },
+
+    // Hierarchy support
     parentCategory: {
       type: Schema.Types.ObjectId,
       ref: "CourseCategory",
@@ -24,6 +26,21 @@ const CourseCategorySchema = new Schema(
         ref: "CourseCategory",
       },
     ],
+
+    // Category level: parent, subcategory, lesson
+    level: {
+      type: String,
+      enum: ["parent", "subcategory", "lesson"],
+      default: "parent",
+    },
+
+    // For lesson-level categories
+    courseId: {
+      type: Schema.Types.ObjectId,
+      ref: "Course",
+      default: null,
+    },
+
     isActive: {
       type: Boolean,
       default: true,
@@ -32,16 +49,30 @@ const CourseCategorySchema = new Schema(
       type: Number,
       default: 0,
     },
+
+    // Enhanced metadata for different levels
     metadata: {
       totalCourses: {
         type: Number,
         default: 0,
       },
-      totalPDFs: {
+      totalSubcategories: {
+        type: Number,
+        default: 0,
+      },
+      totalLessons: {
+        type: Number,
+        default: 0,
+      },
+      totalNotes: {
         type: Number,
         default: 0,
       },
       totalVideos: {
+        type: Number,
+        default: 0,
+      },
+      totalDuration: {
         type: Number,
         default: 0,
       },
@@ -50,6 +81,18 @@ const CourseCategorySchema = new Schema(
         default: Date.now,
       },
     },
+
+    // Display preferences
+    displaySettings: {
+      showInNavigation: {
+        type: Boolean,
+        default: true,
+      },
+      featuredOrder: Number,
+      thumbnailImage: String,
+      bannerImage: String,
+    },
+
     createdBy: {
       _id: gen.required(String),
       email: gen.required(String),
@@ -65,11 +108,20 @@ const CourseCategorySchema = new Schema(
 
 // Virtual for full category path
 CourseCategorySchema.virtual("fullPath").get(function () {
-  // This would be populated when needed
   return this.name;
 });
 
-// Pre-save middleware to generate slug
+// Virtual for hierarchy level display
+CourseCategorySchema.virtual("levelDisplay").get(function () {
+  const levelMap = {
+    parent: "Main Category",
+    subcategory: "Technology",
+    lesson: "Lesson",
+  };
+  return levelMap[this.level] || "Unknown";
+});
+
+// Pre-save middleware to generate slug and handle hierarchy
 CourseCategorySchema.pre("save", function (next) {
   if (this.isModified("name")) {
     this.slug = this.name
@@ -77,13 +129,20 @@ CourseCategorySchema.pre("save", function (next) {
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/(^-|-$)/g, "");
   }
+
+  // Auto-set level based on parent
+  if (this.parentCategory && !this.level) {
+    this.level = "subcategory";
+  }
+
   next();
 });
 
-// Index for better performance
+// Indexes for better performance
 CourseCategorySchema.index({ slug: 1 });
 CourseCategorySchema.index({ parentCategory: 1, sortOrder: 1 });
-CourseCategorySchema.index({ isActive: 1, sortOrder: 1 });
+CourseCategorySchema.index({ level: 1, isActive: 1 });
+CourseCategorySchema.index({ "createdBy._id": 1 });
 
 const CourseCategory =
   models?.CourseCategory || model("CourseCategory", CourseCategorySchema);

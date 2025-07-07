@@ -17,7 +17,7 @@ const {
   UpdateCourseCategory,
   DeleteCourseCategory,
   GetCategoryHierarchy,
-} = require("./course.category.methods");
+} = require("./course.category.methods"); 
 const {
   EnrollInCourse,
   GetUserEnrollments,

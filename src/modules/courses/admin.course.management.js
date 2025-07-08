@@ -418,6 +418,18 @@ const CreateCourse = async (req, res) => {
         );
     }
 
+    if (!thumbnailFile) {
+      return res
+        .status(400)
+        .json(
+          GenRes(
+            400,
+            null,
+            { error: "Course thumbnail is required" },
+            "Please upload a course thumbnail"
+          )
+        );
+    }
     // Validate categories exist and hierarchy is correct
     const [parentCategory, subcategory] = await Promise.all([
       CourseCategory.findById(data.parentCategoryId),
@@ -515,6 +527,19 @@ const CreateCourse = async (req, res) => {
       );
   } catch (error) {
     console.error("Error creating course:", error);
+
+    // Clean up uploaded file if course creation fails
+    if (req.file_location) {
+      try {
+        fs.unlinkSync(path.join(process.cwd(), req.file_location.slice(1)));
+      } catch (cleanupError) {
+        console.log(
+          `Failed to clean up file ${req.file_location}:`,
+          cleanupError?.message
+        );
+      }
+    }
+
     return res.status(500).json(GenRes(500, null, { error }, error?.message));
   }
 };
@@ -602,6 +627,19 @@ const UpdateCourse = async (req, res) => {
       .json(GenRes(200, updatedCourse, null, "Course updated successfully"));
   } catch (error) {
     console.error("Error updating course:", error);
+
+    // Clean up uploaded file if update fails
+    if (req.file_location) {
+      try {
+        fs.unlinkSync(path.join(process.cwd(), req.file_location.slice(1)));
+      } catch (cleanupError) {
+        console.log(
+          `Failed to clean up file ${req.file_location}:`,
+          cleanupError?.message
+        );
+      }
+    }
+
     return res.status(500).json(GenRes(500, null, error, error?.message));
   }
 };
@@ -1475,7 +1513,7 @@ const UpdateOverviewVideo = async (req, res) => {
     }
 
     const { courseId } = req.params;
-    const overviewVideoFile = req.file_location;
+    const overviewVideoFile = req.file_location; // From multer
 
     if (!overviewVideoFile) {
       return res
@@ -1498,12 +1536,7 @@ const UpdateOverviewVideo = async (req, res) => {
         );
     }
 
-    const course = await EnhancedCourse.findByIdAndUpdate(
-      courseId,
-      { $set: { overviewVideo: overviewVideoFile } },
-      { new: true, runValidators: true }
-    );
-
+    const course = await EnhancedCourse.findById(courseId);
     if (!course) {
       return res
         .status(404)
@@ -1512,18 +1545,47 @@ const UpdateOverviewVideo = async (req, res) => {
         );
     }
 
+    // Delete old overview video if exists
+    if (course.overviewVideo) {
+      try {
+        const oldPath = path.join(process.cwd(), course.overviewVideo.slice(1));
+        fs.unlinkSync(oldPath);
+      } catch (error) {
+        console.log(`Failed to delete old overview video: ${error?.message}`);
+      }
+    }
+
+    const updatedCourse = await EnhancedCourse.findByIdAndUpdate(
+      courseId,
+      { $set: { overviewVideo: overviewVideoFile } },
+      { new: true, runValidators: true }
+    );
+
     return res
       .status(200)
       .json(
         GenRes(
           200,
-          { overviewVideo: course.overviewVideo },
+          { overviewVideo: updatedCourse.overviewVideo },
           null,
           "Overview video updated successfully"
         )
       );
   } catch (error) {
     console.error("Error updating overview video:", error);
+
+    // Clean up uploaded file if update fails
+    if (req.file_location) {
+      try {
+        fs.unlinkSync(path.join(process.cwd(), req.file_location.slice(1)));
+      } catch (cleanupError) {
+        console.log(
+          `Failed to clean up file ${req.file_location}:`,
+          cleanupError?.message
+        );
+      }
+    }
+
     return res.status(500).json(GenRes(500, null, error, error?.message));
   }
 };

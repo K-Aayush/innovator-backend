@@ -30,6 +30,7 @@ const {
   DeleteVideo,
 
   // Overview Video Management
+  AddOverviewVideo,
   UpdateOverviewVideo,
   DeleteOverviewVideo,
 } = require("./admin.course.management");
@@ -194,6 +195,13 @@ router.delete(
 // ==================== FILE UPLOAD ROUTES ====================
 
 // Upload course files (public)
+router.post(
+  "/admin/courses/:courseId/overview-video",
+  basicMiddleware,
+  AdminFiles("private").single("overviewVideo"),
+  AddOverviewVideo
+);
+
 router.put(
   "/admin/courses/:courseId/overview-video",
   basicMiddleware,

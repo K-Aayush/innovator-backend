@@ -1496,6 +1496,101 @@ const DeleteVideo = async (req, res) => {
 
 // ==================== OVERVIEW VIDEO MANAGEMENT ====================
 
+//Add overview video
+const AddOverviewVideo = async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res
+        .status(403)
+        .json(
+          GenRes(
+            403,
+            null,
+            { error: "Not authorized" },
+            "Only admins can add overview video"
+          )
+        );
+    }
+
+    const { courseId } = req.params;
+    const overviewVideoFile = req.file_location;
+
+    if (!overviewVideoFile) {
+      return res
+        .status(400)
+        .json(
+          GenRes(
+            400,
+            null,
+            { error: "Overview video file is required" },
+            "Please upload an overview video"
+          )
+        );
+    }
+
+    if (!isValidObjectId(courseId)) {
+      return res
+        .status(400)
+        .json(
+          GenRes(400, null, { error: "Invalid course ID" }, "Invalid course ID")
+        );
+    }
+
+    const course = await EnhancedCourse.findById(courseId);
+    if (!course) {
+      return res
+        .status(404)
+        .json(
+          GenRes(404, null, { error: "Course not found" }, "Course not found")
+        );
+    }
+
+    // Check if course already has an overview video
+    if (course.overviewVideo) {
+      return res
+        .status(400)
+        .json(
+          GenRes(
+            400,
+            null,
+            { error: "Course already has an overview video" },
+            "Use update endpoint to modify existing overview video"
+          )
+        );
+    }
+
+    course.overviewVideo = overviewVideoFile;
+    const updatedCourse = await course.save();
+
+    return res
+      .status(200)
+      .json(
+        GenRes(
+          200,
+          { overviewVideo: updatedCourse.overviewVideo },
+          null,
+          "Overview video added successfully"
+        )
+      );
+  } catch (error) {
+    console.error("Error adding overview video:", error);
+
+    // Clean up uploaded file if add fails
+    if (req.file_location) {
+      try {
+        fs.unlinkSync(path.join(process.cwd(), req.file_location.slice(1)));
+      } catch (cleanupError) {
+        console.log(
+          `Failed to clean up file ${req.file_location}:`,
+          cleanupError?.message
+        );
+      }
+    }
+
+    return res.status(500).json(GenRes(500, null, error, error?.message));
+  }
+};
+
 // Update Overview Video
 const UpdateOverviewVideo = async (req, res) => {
   try {
@@ -1513,7 +1608,7 @@ const UpdateOverviewVideo = async (req, res) => {
     }
 
     const { courseId } = req.params;
-    const overviewVideoFile = req.file_location; // From multer
+    const overviewVideoFile = req.file_location;
 
     if (!overviewVideoFile) {
       return res
@@ -1755,6 +1850,7 @@ module.exports = {
   DeleteVideo,
 
   // Overview Video Management
+  AddOverviewVideo,
   UpdateOverviewVideo,
   DeleteOverviewVideo,
 };

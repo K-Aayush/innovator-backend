@@ -1,6 +1,7 @@
 const basicMiddleware = require("../../middlewares/basicMiddleware");
 const AdminFiles = require("../../utils/fileProcessor/multer.courses");
 
+// Import management functions
 const {
   // Category Management
   CreateParentCategory,

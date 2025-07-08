@@ -1,7 +1,6 @@
 const basicMiddleware = require("../../middlewares/basicMiddleware");
 const AdminFiles = require("../../utils/fileProcessor/multer.courses");
 
-// Import management functions
 const {
   // Category Management
   CreateParentCategory,
@@ -83,10 +82,26 @@ router.delete("/admin/categories/:categoryId", basicMiddleware, DeleteCategory);
 // ==================== ADMIN COURSE MANAGEMENT ====================
 
 // Create course
-router.post("/admin/courses", basicMiddleware, CreateCourse);
+router.post(
+  "/admin/courses",
+  basicMiddleware,
+  AdminFiles("public").fields([
+    { name: "thumbnail", maxCount: 1 },
+    { name: "bannerImage", maxCount: 1 },
+  ]),
+  CreateCourse
+);
 
 // Update course
-router.put("/admin/courses/:courseId", basicMiddleware, UpdateCourse);
+router.put(
+  "/admin/courses/:courseId",
+  basicMiddleware,
+  AdminFiles("public").fields([
+    { name: "thumbnail", maxCount: 1 },
+    { name: "bannerImage", maxCount: 1 },
+  ]),
+  UpdateCourse
+);
 
 // Delete course
 router.delete("/admin/courses/:courseId", basicMiddleware, DeleteCourse);
@@ -95,6 +110,7 @@ router.delete("/admin/courses/:courseId", basicMiddleware, DeleteCourse);
 router.put(
   "/admin/courses/:courseId/overview-video",
   basicMiddleware,
+  AdminFiles("private").single("overviewVideo"),
   UpdateOverviewVideo
 );
 

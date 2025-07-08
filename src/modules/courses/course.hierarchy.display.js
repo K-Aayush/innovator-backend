@@ -1,9 +1,9 @@
 const GenRes = require("../../utils/routers/GenRes");
-const CourseCategory = require("./course.category.model");
-const Course = require("./courses.model");
+const CourseCategory = require("./course.hierarchy.model");
+const EnhancedCourse = require("./course.enhanced.model");
 const { isValidObjectId } = require("mongoose");
 
-// Get parent categories (main course areas)
+// Get all parent categories for main navigation
 const GetParentCategories = async (req, res) => {
   try {
     const parentCategories = await CourseCategory.find({
@@ -24,16 +24,16 @@ const GetParentCategories = async (req, res) => {
               level: "subcategory",
               isActive: true,
             }),
-            Course.countDocuments({
+            EnhancedCourse.countDocuments({
               "parentCategory._id": category._id.toString(),
               isPublished: true,
             }),
-            Course.aggregate([
+            EnhancedCourse.aggregate([
               { $match: { "parentCategory._id": category._id.toString() } },
               { $project: { notesCount: { $size: "$notes" } } },
               { $group: { _id: null, total: { $sum: "$notesCount" } } },
             ]),
-            Course.aggregate([
+            EnhancedCourse.aggregate([
               { $match: { "parentCategory._id": category._id.toString() } },
               { $project: { videosCount: { $size: "$videos" } } },
               { $group: { _id: null, total: { $sum: "$videosCount" } } },
@@ -68,7 +68,7 @@ const GetParentCategories = async (req, res) => {
   }
 };
 
-// Get subcategories under a parent category
+// Get subcategories under a parent category 
 const GetSubcategories = async (req, res) => {
   try {
     const { parentId } = req.params;
@@ -99,21 +99,21 @@ const GetSubcategories = async (req, res) => {
       subcategories.map(async (subcategory) => {
         const [courseCount, totalNotes, totalVideos, totalLessons] =
           await Promise.all([
-            Course.countDocuments({
+            EnhancedCourse.countDocuments({
               "subcategory._id": subcategory._id.toString(),
               isPublished: true,
             }),
-            Course.aggregate([
+            EnhancedCourse.aggregate([
               { $match: { "subcategory._id": subcategory._id.toString() } },
               { $project: { notesCount: { $size: "$notes" } } },
               { $group: { _id: null, total: { $sum: "$notesCount" } } },
             ]),
-            Course.aggregate([
+            EnhancedCourse.aggregate([
               { $match: { "subcategory._id": subcategory._id.toString() } },
               { $project: { videosCount: { $size: "$videos" } } },
               { $group: { _id: null, total: { $sum: "$videosCount" } } },
             ]),
-            Course.aggregate([
+            EnhancedCourse.aggregate([
               { $match: { "subcategory._id": subcategory._id.toString() } },
               { $project: { lessonsCount: { $size: "$lessons" } } },
               { $group: { _id: null, total: { $sum: "$lessonsCount" } } },
@@ -187,7 +187,7 @@ const GetSubcategoryCourses = async (req, res) => {
 
     // Get courses with pagination
     const [courses, total] = await Promise.all([
-      Course.find({
+      EnhancedCourse.find({
         "subcategory._id": subcategoryId,
         isPublished: true,
       })
@@ -195,7 +195,7 @@ const GetSubcategoryCourses = async (req, res) => {
         .skip(pageNum * limitNum)
         .limit(limitNum)
         .lean(),
-      Course.countDocuments({
+      EnhancedCourse.countDocuments({
         "subcategory._id": subcategoryId,
         isPublished: true,
       }),
@@ -253,7 +253,7 @@ const GetCourseWithLessons = async (req, res) => {
         );
     }
 
-    const course = await Course.findById(courseId).lean();
+    const course = await EnhancedCourse.findById(courseId).lean();
     if (!course) {
       return res
         .status(404)
@@ -275,7 +275,6 @@ const GetCourseWithLessons = async (req, res) => {
     };
 
     if (lessonId) {
-      // Filter content for specific lesson
       if (!isValidObjectId(lessonId)) {
         return res
           .status(400)
@@ -374,7 +373,7 @@ const GetNotesByParentCategory = async (req, res) => {
       }
 
       // Get all notes from courses in this subcategory
-      const courses = await Course.find({
+      const courses = await EnhancedCourse.find({
         "subcategory._id": subcategoryId,
         isPublished: true,
       })
@@ -425,7 +424,7 @@ const GetNotesByParentCategory = async (req, res) => {
       // Enrich with note counts
       const enrichedSubcategories = await Promise.all(
         subcategories.map(async (subcategory) => {
-          const noteCount = await Course.aggregate([
+          const noteCount = await EnhancedCourse.aggregate([
             { $match: { "subcategory._id": subcategory._id.toString() } },
             { $project: { notesCount: { $size: "$notes" } } },
             { $group: { _id: null, total: { $sum: "$notesCount" } } },
@@ -489,7 +488,7 @@ const GetCategoryHierarchy = async (req, res) => {
       hierarchy.map(async (parent) => {
         const enrichedSubcategories = await Promise.all(
           parent.subcategories.map(async (sub) => {
-            const courseCount = await Course.countDocuments({
+            const courseCount = await EnhancedCourse.countDocuments({
               "subcategory._id": sub._id.toString(),
               isPublished: true,
             });

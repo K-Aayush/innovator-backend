@@ -3,6 +3,7 @@ const ModelGenerator = require("../../utils/database/modelGenerator");
 
 const gen = new ModelGenerator();
 
+// Course Category Schema
 const CourseCategorySchema = new Schema(
   {
     name: gen.required(String),
@@ -13,8 +14,9 @@ const CourseCategorySchema = new Schema(
       type: String,
       default: "#4A90E2",
     },
+    image: String,
+    bannerImage: String,
 
-    // Hierarchy support
     parentCategory: {
       type: Schema.Types.ObjectId,
       ref: "CourseCategory",
@@ -27,18 +29,11 @@ const CourseCategorySchema = new Schema(
       },
     ],
 
-    // Category level: parent, subcategory, lesson
+    // Category level: parent or subcategory only
     level: {
       type: String,
-      enum: ["parent", "subcategory", "lesson"],
+      enum: ["parent", "subcategory"],
       default: "parent",
-    },
-
-    // For lesson-level categories
-    courseId: {
-      type: Schema.Types.ObjectId,
-      ref: "Course",
-      default: null,
     },
 
     isActive: {
@@ -50,7 +45,7 @@ const CourseCategorySchema = new Schema(
       default: 0,
     },
 
-    // Enhanced metadata for different levels
+    // Enhanced metadata
     metadata: {
       totalCourses: {
         type: Number,
@@ -106,22 +101,7 @@ const CourseCategorySchema = new Schema(
   }
 );
 
-// Virtual for full category path
-CourseCategorySchema.virtual("fullPath").get(function () {
-  return this.name;
-});
-
-// Virtual for hierarchy level display
-CourseCategorySchema.virtual("levelDisplay").get(function () {
-  const levelMap = {
-    parent: "Main Category",
-    subcategory: "Technology",
-    lesson: "Lesson",
-  };
-  return levelMap[this.level] || "Unknown";
-});
-
-// Pre-save middleware to generate slug and handle hierarchy
+// Pre-save middleware
 CourseCategorySchema.pre("save", function (next) {
   if (this.isModified("name")) {
     this.slug = this.name
@@ -131,14 +111,13 @@ CourseCategorySchema.pre("save", function (next) {
   }
 
   // Auto-set level based on parent
-  if (this.parentCategory && !this.level) {
+  if (this.parentCategory && this.level === "parent") {
     this.level = "subcategory";
   }
 
   next();
 });
 
-// Indexes for better performance
 CourseCategorySchema.index({ slug: 1 });
 CourseCategorySchema.index({ parentCategory: 1, sortOrder: 1 });
 CourseCategorySchema.index({ level: 1, isActive: 1 });

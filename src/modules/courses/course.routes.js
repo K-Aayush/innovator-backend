@@ -1,6 +1,7 @@
 const basicMiddleware = require("../../middlewares/basicMiddleware");
 const AdminFiles = require("../../utils/fileProcessor/multer.courses");
 
+// Import management functions
 const {
   // Category Management
   CreateParentCategory,
@@ -126,12 +127,18 @@ router.delete(
 // ==================== ADMIN NOTE MANAGEMENT ====================
 
 // Add note to course (with optional lesson association)
-router.post("/admin/courses/:courseId/notes", basicMiddleware, AddNote);
+router.post(
+  "/admin/courses/:courseId/notes",
+  basicMiddleware,
+  AdminFiles("private").single("noteFile"),
+  AddNote
+);
 
 // Update note
 router.put(
   "/admin/courses/:courseId/notes/:noteId",
   basicMiddleware,
+  AdminFiles("private").single("noteFile"),
   UpdateNote
 );
 
@@ -145,12 +152,18 @@ router.delete(
 // ==================== ADMIN VIDEO MANAGEMENT ====================
 
 // Add video to course (with optional lesson association)
-router.post("/admin/courses/:courseId/videos", basicMiddleware, AddVideo);
+router.post(
+  "/admin/courses/:courseId/videos",
+  basicMiddleware,
+  AdminFiles("private").single("videoFile"),
+  AddVideo
+);
 
 // Update video
 router.put(
   "/admin/courses/:courseId/videos/:videoId",
   basicMiddleware,
+  AdminFiles("private").single("videoFile"),
   UpdateVideo
 );
 
@@ -164,6 +177,13 @@ router.delete(
 // ==================== FILE UPLOAD ROUTES ====================
 
 // Upload course files (public)
+router.put(
+  "/admin/courses/:courseId/overview-video",
+  basicMiddleware,
+  AdminFiles("private").single("overviewVideo"),
+  UpdateOverviewVideo
+);
+
 router.post(
   "/admin/upload-public-files",
   basicMiddleware,

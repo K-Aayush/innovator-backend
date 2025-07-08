@@ -3,7 +3,7 @@ const ModelGenerator = require("../../utils/database/modelGenerator");
 
 const gen = new ModelGenerator();
 
-// Course Category Schema
+// Enhanced Course Category Schema with proper hierarchy
 const CourseCategorySchema = new Schema(
   {
     name: gen.required(String),
@@ -14,9 +14,8 @@ const CourseCategorySchema = new Schema(
       type: String,
       default: "#4A90E2",
     },
-    image: String,
-    bannerImage: String,
 
+    // Hierarchy support - only parent and subcategory levels
     parentCategory: {
       type: Schema.Types.ObjectId,
       ref: "CourseCategory",
@@ -84,8 +83,6 @@ const CourseCategorySchema = new Schema(
         default: true,
       },
       featuredOrder: Number,
-      thumbnailImage: String,
-      bannerImage: String,
     },
 
     createdBy: {
@@ -101,7 +98,7 @@ const CourseCategorySchema = new Schema(
   }
 );
 
-// Pre-save middleware
+// Pre-save middleware to generate slug and handle hierarchy
 CourseCategorySchema.pre("save", function (next) {
   if (this.isModified("name")) {
     this.slug = this.name
@@ -118,6 +115,7 @@ CourseCategorySchema.pre("save", function (next) {
   next();
 });
 
+// Indexes for better performance
 CourseCategorySchema.index({ slug: 1 });
 CourseCategorySchema.index({ parentCategory: 1, sortOrder: 1 });
 CourseCategorySchema.index({ level: 1, isActive: 1 });

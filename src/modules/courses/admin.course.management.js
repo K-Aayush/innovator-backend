@@ -24,7 +24,7 @@ const CreateParentCategory = async (req, res) => {
         );
     }
 
-    const { name, description, icon, color, image, bannerImage } = req.body;
+    const { name, description, icon, color } = req.body;
 
     if (!name) {
       return res
@@ -63,8 +63,6 @@ const CreateParentCategory = async (req, res) => {
       description,
       icon,
       color: color || "#4A90E2",
-      image,
-      bannerImage,
       level: "parent",
       slug,
       createdBy: {
@@ -104,15 +102,7 @@ const CreateSubcategory = async (req, res) => {
         );
     }
 
-    const {
-      name,
-      description,
-      icon,
-      color,
-      image,
-      bannerImage,
-      parentCategoryId,
-    } = req.body;
+    const { name, description, icon, color, parentCategoryId } = req.body;
 
     if (!name || !parentCategoryId) {
       return res
@@ -178,8 +168,6 @@ const CreateSubcategory = async (req, res) => {
       description,
       icon,
       color: color || "#4A90E2",
-      image,
-      bannerImage,
       parentCategory: parentCategoryId,
       level: "subcategory",
       slug,
@@ -399,6 +387,9 @@ const CreateCourse = async (req, res) => {
     }
 
     const data = req.body;
+    const files = req.file_locations || [];
+    const thumbnailFile = files.find((f) => f.includes("thumbnail"));
+    const bannerFile = files.find((f) => f.includes("bannerImage"));
 
     // Validate required categories
     if (!data.parentCategoryId || !isValidObjectId(data.parentCategoryId)) {
@@ -476,6 +467,8 @@ const CreateCourse = async (req, res) => {
 
     const courseData = {
       ...data,
+      thumbnail: thumbnailFile || data.thumbnail,
+      bannerImage: bannerFile || data.bannerImage,
       parentCategory: {
         _id: parentCategory._id.toString(),
         name: parentCategory.name,
@@ -544,6 +537,9 @@ const UpdateCourse = async (req, res) => {
 
     const { courseId } = req.params;
     const data = req.body;
+    const files = req.file_locations || [];
+    const thumbnailFile = files.find((f) => f.includes("thumbnail"));
+    const bannerFile = files.find((f) => f.includes("bannerImage"));
 
     if (!isValidObjectId(courseId)) {
       return res
@@ -562,10 +558,38 @@ const UpdateCourse = async (req, res) => {
         );
     }
 
+    // Remove fields that shouldn't be updated directly
     delete data._id;
     delete data.author;
     delete data.createdAt;
     delete data.updatedAt;
+
+    // Update files if uploaded
+    if (thumbnailFile) {
+      // Delete old thumbnail
+      if (course.thumbnail) {
+        try {
+          const oldPath = path.join(process.cwd(), course.thumbnail.slice(1));
+          fs.unlinkSync(oldPath);
+        } catch (error) {
+          console.log(`Failed to delete old thumbnail: ${error?.message}`);
+        }
+      }
+      data.thumbnail = thumbnailFile;
+    }
+
+    if (bannerFile) {
+      // Delete old banner
+      if (course.bannerImage) {
+        try {
+          const oldPath = path.join(process.cwd(), course.bannerImage.slice(1));
+          fs.unlinkSync(oldPath);
+        } catch (error) {
+          console.log(`Failed to delete old banner: ${error?.message}`);
+        }
+      }
+      data.bannerImage = bannerFile;
+    }
 
     const updatedCourse = await EnhancedCourse.findByIdAndUpdate(
       courseId,
@@ -880,7 +904,20 @@ const AddNote = async (req, res) => {
 
     const { courseId } = req.params;
     const noteData = req.body;
+    const noteFile = req.file_location;
 
+    if (!noteFile) {
+      return res
+        .status(400)
+        .json(
+          GenRes(
+            400,
+            null,
+            { error: "Note file is required" },
+            "Please upload a note file"
+          )
+        );
+    }
     if (!isValidObjectId(courseId)) {
       return res
         .status(400)
@@ -922,6 +959,7 @@ const AddNote = async (req, res) => {
 
     const newNote = {
       ...noteData,
+      fileUrl: noteFile,
       sortOrder: noteData.sortOrder || course.notes.length,
       lessonId: noteData.lessonId || null,
     };
@@ -956,6 +994,7 @@ const UpdateNote = async (req, res) => {
 
     const { courseId, noteId } = req.params;
     const updateData = req.body;
+    const noteFile = req.file_location;
 
     if (!isValidObjectId(courseId) || !isValidObjectId(noteId)) {
       return res
@@ -986,6 +1025,23 @@ const UpdateNote = async (req, res) => {
       return res
         .status(404)
         .json(GenRes(404, null, { error: "Note not found" }, "Note not found"));
+    }
+
+    // If new file uploaded, delete old file and update
+    if (noteFile) {
+      const oldNote = course.notes[noteIndex];
+      if (oldNote.fileUrl) {
+        try {
+          const oldFilePath = path.join(
+            process.cwd(),
+            oldNote.fileUrl.slice(1)
+          );
+          fs.unlinkSync(oldFilePath);
+        } catch (error) {
+          console.log(`Failed to delete old note file: ${error?.message}`);
+        }
+      }
+      updateData.fileUrl = noteFile;
     }
 
     // Update note
@@ -1099,6 +1155,20 @@ const AddVideo = async (req, res) => {
 
     const { courseId } = req.params;
     const videoData = req.body;
+    const videoFile = req.file_location;
+
+    if (!videoFile) {
+      return res
+        .status(400)
+        .json(
+          GenRes(
+            400,
+            null,
+            { error: "Video file is required" },
+            "Please upload a video file"
+          )
+        );
+    }
 
     if (!isValidObjectId(courseId)) {
       return res
@@ -1143,12 +1213,9 @@ const AddVideo = async (req, res) => {
     let duration = videoData.duration || "00:00:00";
     let metadata = {};
 
-    if (videoData.videoUrl) {
+    if (videoFile) {
       try {
-        const videoPath = path.join(
-          process.cwd(),
-          videoData.videoUrl.substring(1)
-        );
+        const videoPath = path.join(process.cwd(), videoFile.substring(1));
         if (fs.existsSync(videoPath)) {
           const videoMetadata = await VideoDurationExtractor.getVideoMetadata(
             videoPath
@@ -1169,6 +1236,7 @@ const AddVideo = async (req, res) => {
 
     const newVideo = {
       ...videoData,
+      videoUrl: videoFile,
       duration,
       metadata,
       sortOrder: videoData.sortOrder || course.videos.length,
@@ -1205,6 +1273,7 @@ const UpdateVideo = async (req, res) => {
 
     const { courseId, videoId } = req.params;
     const updateData = req.body;
+    const videoFile = req.file_location;
 
     if (!isValidObjectId(courseId) || !isValidObjectId(videoId)) {
       return res
@@ -1237,6 +1306,43 @@ const UpdateVideo = async (req, res) => {
         .json(
           GenRes(404, null, { error: "Video not found" }, "Video not found")
         );
+    }
+
+    // If new file uploaded, delete old file and update
+    if (videoFile) {
+      const oldVideo = course.videos[videoIndex];
+      if (oldVideo.videoUrl) {
+        try {
+          const oldFilePath = path.join(
+            process.cwd(),
+            oldVideo.videoUrl.slice(1)
+          );
+          fs.unlinkSync(oldFilePath);
+        } catch (error) {
+          console.log(`Failed to delete old video file: ${error?.message}`);
+        }
+      }
+      updateData.videoUrl = videoFile;
+
+      // Extract new video metadata
+      try {
+        const videoPath = path.join(process.cwd(), videoFile.substring(1));
+        if (fs.existsSync(videoPath)) {
+          const videoMetadata = await VideoDurationExtractor.getVideoMetadata(
+            videoPath
+          );
+          updateData.duration = videoMetadata.duration.formatted;
+          updateData.metadata = {
+            durationSeconds: videoMetadata.duration.seconds,
+            quality: videoMetadata.quality,
+            aspectRatio: videoMetadata.video?.aspectRatio,
+            fileSize: videoMetadata.format.size,
+            bitrate: videoMetadata.format.bitrate,
+          };
+        }
+      } catch (error) {
+        console.error(`Error extracting video metadata:`, error);
+      }
     }
 
     // Update video
@@ -1369,7 +1475,20 @@ const UpdateOverviewVideo = async (req, res) => {
     }
 
     const { courseId } = req.params;
-    const { overviewVideo } = req.body;
+    const overviewVideoFile = req.file_location;
+
+    if (!overviewVideoFile) {
+      return res
+        .status(400)
+        .json(
+          GenRes(
+            400,
+            null,
+            { error: "Overview video file is required" },
+            "Please upload an overview video"
+          )
+        );
+    }
 
     if (!isValidObjectId(courseId)) {
       return res
@@ -1381,7 +1500,7 @@ const UpdateOverviewVideo = async (req, res) => {
 
     const course = await EnhancedCourse.findByIdAndUpdate(
       courseId,
-      { $set: { overviewVideo } },
+      { $set: { overviewVideo: overviewVideoFile } },
       { new: true, runValidators: true }
     );
 
@@ -1472,6 +1591,7 @@ const DeleteOverviewVideo = async (req, res) => {
   }
 };
 
+// Helper function to update category metadata
 async function updateCategoryMetadata(categoryId) {
   try {
     const category = await CourseCategory.findById(categoryId);
@@ -1484,6 +1604,7 @@ async function updateCategoryMetadata(categoryId) {
     let totalDuration = 0;
 
     if (category.level === "parent") {
+      // For parent categories, aggregate from all subcategories
       const subcategories = await CourseCategory.find({
         parentCategory: categoryId,
         level: "subcategory",
@@ -1509,6 +1630,7 @@ async function updateCategoryMetadata(categoryId) {
         });
       }
     } else if (category.level === "subcategory") {
+      // For subcategories, aggregate from direct courses
       const courses = await EnhancedCourse.find({
         "subcategory._id": categoryId,
       });

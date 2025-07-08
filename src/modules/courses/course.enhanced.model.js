@@ -94,7 +94,7 @@ const EnhancedCourseSchema = new Schema(
     title: gen.required(String),
     description: gen.required(String),
     overview: String,
-    overviewVideo: String, 
+    overviewVideo: String, // Course overview video
 
     // Pricing
     price: gen.required({
@@ -103,8 +103,7 @@ const EnhancedCourseSchema = new Schema(
     }),
 
     // Media
-    thumbnail: gen.required(String),
-    bannerImage: String,
+    thumbnail: gen.required(String), // Course thumbnail image
 
     // Course structure
     lessons: [LessonSchema],
@@ -255,6 +254,7 @@ EnhancedCourseSchema.virtual("videosByLesson").get(function () {
 
 // Pre-save middleware
 EnhancedCourseSchema.pre("save", function (next) {
+  // Sort lessons, notes, and videos by sortOrder
   if (this.lessons) {
     this.lessons.sort((a, b) => a.sortOrder - b.sortOrder);
   }

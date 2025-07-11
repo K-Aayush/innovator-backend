@@ -7,6 +7,7 @@ const GenRes = require("../../utils/routers/GenRes");
 const { isValidObjectId } = require("mongoose");
 const FCMHandler = require("../../utils/notification/fcmHandler");
 const CertificateGenerator = require("./certificate.generator");
+const path = require("path");
 
 // Enroll in a course
 const EnrollInCourse = async (req, res) => {
@@ -566,7 +567,7 @@ const GetCourseProgress = async (req, res) => {
   }
 };
 
-// Issue certificate for completed course (UPDATED WITH CERTIFICATE GENERATOR)
+// Issue certificate for completed course
 const issueCertificate = async (enrollment) => {
   try {
     // Get course details
@@ -594,7 +595,7 @@ const issueCertificate = async (enrollment) => {
 
     await certificate.save();
 
-    // Generate the actual certificate file using CertificateGenerator
+    // Prepare certificate data
     const certificateData = {
       certificateId: certificate.certificateId,
       studentName: enrollment.student.name,
@@ -606,9 +607,20 @@ const issueCertificate = async (enrollment) => {
       issuer: certificate.metadata.issuer.name,
     };
 
+    // Create certificate directory structure similar to multer
+    const certificateDir = path.join(
+      process.cwd(),
+      "certificates",
+      "generated",
+      "course",
+      enrollment.student._id
+    );
+
     // Generate and save the certificate HTML file
-    const certificateResult = await CertificateGenerator.saveCertificate(
-      certificateData
+    const certificateResult = await CertificateGenerator.saveCertificateFile(
+      certificateData,
+      certificateDir,
+      "course"
     );
 
     if (certificateResult.success) {
@@ -633,7 +645,11 @@ const issueCertificate = async (enrollment) => {
       // Still update enrollment even if file generation fails
       enrollment.completion.certificateIssued = true;
       enrollment.completion.certificateId = certificate.certificateId;
-      enrollment.completion.certificateUrl = `/certificates/${certificate.certificateId}`;
+      enrollment.completion.certificateUrl =
+        CertificateGenerator.getCertificateUrl(
+          certificate.certificateId,
+          "course"
+        );
       await enrollment.save();
     }
 
@@ -703,9 +719,16 @@ const GetUserCertificates = async (req, res) => {
     // Add view URLs for each certificate
     const certificatesWithUrls = certificates.map((cert) => ({
       ...cert,
-      viewUrl: CertificateGenerator.getCertificateUrl(cert.certificateId),
+      viewUrl: CertificateGenerator.getCertificateUrl(
+        cert.certificateId,
+        "course"
+      ),
       verificationUrl: CertificateGenerator.getVerificationUrl(
         cert.certificate.verificationCode
+      ),
+      fileExists: CertificateGenerator.certificateExists(
+        cert.certificateId,
+        "course"
       ),
     }));
 
@@ -776,7 +799,7 @@ const VerifyCertificate = async (req, res) => {
   }
 };
 
-// Download certificate (new method)
+// Download certificate
 const DownloadCertificate = async (req, res) => {
   try {
     const { certificateId } = req.params;
@@ -801,6 +824,57 @@ const DownloadCertificate = async (req, res) => {
         );
     }
 
+    // Check if certificate file exists
+    const fileExists = CertificateGenerator.certificateExists(
+      certificateId,
+      "course"
+    );
+
+    if (!fileExists) {
+      // Try to regenerate the certificate if file is missing
+      console.log(
+        `Certificate file missing for ${certificateId}, attempting to regenerate...`
+      );
+
+      const certificateData = {
+        certificateId: certificate.certificateId,
+        studentName: certificate.student.name,
+        courseName: certificate.course.title,
+        completionDate: certificate.enrollment.completionDate,
+        instructor: certificate.course.instructor,
+        verificationCode: certificate.certificate.verificationCode,
+        timeSpent: certificate.enrollment.timeSpent,
+        issuer: certificate.metadata.issuer.name,
+      };
+
+      const certificateDir = path.join(
+        process.cwd(),
+        "certificates",
+        "generated",
+        "course",
+        user._id
+      );
+
+      const regenerateResult = await CertificateGenerator.saveCertificateFile(
+        certificateData,
+        certificateDir,
+        "course"
+      );
+
+      if (!regenerateResult.success) {
+        return res
+          .status(500)
+          .json(
+            GenRes(
+              500,
+              null,
+              { error: "Certificate file not available" },
+              "Certificate file could not be generated"
+            )
+          );
+      }
+    }
+
     // Return download URL
     return res.status(200).json(
       GenRes(
@@ -809,11 +883,12 @@ const DownloadCertificate = async (req, res) => {
           certificateId: certificate.certificateId,
           downloadUrl:
             certificate.certificate.downloadUrl ||
-            CertificateGenerator.getCertificateUrl(certificateId),
+            CertificateGenerator.getCertificateUrl(certificateId, "course"),
           fileName: `${certificate.course.title.replace(
             /[^a-zA-Z0-9]/g,
             "_"
           )}_Certificate.html`,
+          fileExists: true,
         },
         null,
         "Certificate download link generated"
@@ -825,7 +900,7 @@ const DownloadCertificate = async (req, res) => {
   }
 };
 
-// Regenerate certificate (new method)
+// Regenerate certificate
 const RegenerateCertificate = async (req, res) => {
   try {
     const { certificateId } = req.params;
@@ -862,14 +937,24 @@ const RegenerateCertificate = async (req, res) => {
       issuer: certificate.metadata.issuer.name,
     };
 
-    const certificateResult = await CertificateGenerator.saveCertificate(
-      certificateData
+    const certificateDir = path.join(
+      process.cwd(),
+      "certificates",
+      "generated",
+      "course",
+      user._id
+    );
+
+    const certificateResult = await CertificateGenerator.saveCertificateFile(
+      certificateData,
+      certificateDir,
+      "course"
     );
 
     if (certificateResult.success) {
       // Update certificate record with new file URL
       certificate.certificate.certificateUrl = certificateResult.url;
-      certificate.certificate.downloadUrl = certificateResult.url;
+      certificate.certificate.downloadUrl = certificateResult.downloadUrl;
       await certificate.save();
 
       return res.status(200).json(
@@ -877,7 +962,7 @@ const RegenerateCertificate = async (req, res) => {
           200,
           {
             certificateId: certificate.certificateId,
-            certificateUrl: certificateResult.url,
+            certificateUrl: certificateResult.downloadUrl,
             message: "Certificate regenerated successfully",
           },
           null,

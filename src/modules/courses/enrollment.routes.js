@@ -2,49 +2,33 @@ const router = require("express").Router();
 const basicMiddleware = require("../../middlewares/basicMiddleware");
 const {
   EnrollInCourse,
+  UpdateProgress,
   GetUserEnrollments,
-  CheckCourseEnrollment,
-  GetEnrollmentsBySubcategory,
-  UpdateCourseProgress,
-  GetCourseProgress,
-  AddPersonalNote,
-  SubmitCourseFeedback,
   GetEnrollmentAnalytics,
+  GetCourseProgress,
+  GetUserCertificates,
+  VerifyCertificate,
 } = require("./enrollment.methods");
 
-// Course enrollment routes
-router.post("/courses/:courseId/enroll", basicMiddleware, EnrollInCourse);
-router.get(
-  "/courses/:courseId/enrollment-status",
-  basicMiddleware,
-  CheckCourseEnrollment
-);
+// Public certificate verification (no auth required)
+router.get("/verify-certificate/:verificationCode", VerifyCertificate);
 
-// User enrollment management
+// Enrollment routes
+router.post("/courses/:courseId/enroll", basicMiddleware, EnrollInCourse);
 router.get("/my-enrollments", basicMiddleware, GetUserEnrollments);
 router.get("/courses/:courseId/progress", basicMiddleware, GetCourseProgress);
+
+// Progress tracking
 router.post(
-  "/courses/:courseId/progress",
+  "/enrollments/:enrollmentId/progress",
   basicMiddleware,
-  UpdateCourseProgress
+  UpdateProgress
 );
 
-// Personal notes for enrolled courses
-router.post("/courses/:courseId/notes", basicMiddleware, AddPersonalNote);
+// Certificates
+router.get("/my-certificates", basicMiddleware, GetUserCertificates);
 
-// Course feedback for enrolled courses
-router.post(
-  "/courses/:courseId/feedback",
-  basicMiddleware,
-  SubmitCourseFeedback
-);
-
-// Analytics routes
-router.get(
-  "/subcategories/:subcategoryId/enrollments",
-  basicMiddleware,
-  GetEnrollmentsBySubcategory
-);
+// Analytics (for course authors and admins)
 router.get(
   "/courses/:courseId/analytics",
   basicMiddleware,

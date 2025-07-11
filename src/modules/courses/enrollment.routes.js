@@ -8,6 +8,8 @@ const {
   GetCourseProgress,
   GetUserCertificates,
   VerifyCertificate,
+  DownloadCertificate,
+  RegenerateCertificate,
 } = require("./enrollment.methods");
 
 // Public certificate verification (no auth required)
@@ -25,8 +27,18 @@ router.post(
   UpdateProgress
 );
 
-// Certificates
+// Certificate management routes
 router.get("/my-certificates", basicMiddleware, GetUserCertificates);
+router.get(
+  "/certificates/:certificateId/download",
+  basicMiddleware,
+  DownloadCertificate
+);
+router.post(
+  "/certificates/:certificateId/regenerate",
+  basicMiddleware,
+  RegenerateCertificate
+);
 
 // Analytics (for course authors and admins)
 router.get(

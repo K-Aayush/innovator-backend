@@ -3,6 +3,28 @@ const ModelGenerator = require("../../utils/database/modelGenerator");
 
 const gen = new ModelGenerator();
 
+// Progress tracking for individual lessons/videos/notes
+const ProgressItemSchema = new Schema({
+  itemId: gen.required(String), 
+  itemType: gen.required(String, {
+    enum: ["lesson", "video", "note"],
+  }),
+  completed: {
+    type: Boolean,
+    default: false,
+  },
+  completedAt: Date,
+  timeSpent: {
+    type: Number,
+    default: 0, 
+  },
+  lastAccessedAt: {
+    type: Date,
+    default: Date.now,
+  },
+});
+
+// Course enrollment schema
 const EnrollmentSchema = new Schema(
   {
     student: {
@@ -10,7 +32,6 @@ const EnrollmentSchema = new Schema(
       email: gen.required(String),
       name: gen.required(String),
       picture: String,
-      phone: String,
     },
     course: {
       _id: gen.required(String),
@@ -20,14 +41,9 @@ const EnrollmentSchema = new Schema(
         usd: Number,
         npr: Number,
       },
-      totalNotes: { type: Number, default: 0 },
-      category: {
-        _id: String,
-        name: String,
-      },
-      author: {
-        _id: String,
-        email: String,
+      isFree: {
+        type: Boolean,
+        default: true,
       },
     },
     enrollmentDate: {
@@ -36,35 +52,63 @@ const EnrollmentSchema = new Schema(
     },
     status: {
       type: String,
-      enum: ["active", "completed", "suspended", "refunded", "expired"],
+      enum: ["active", "completed", "suspended", "cancelled"],
       default: "active",
     },
+
+    // Progress tracking
     progress: {
-      completedNotes: [
-        {
-          noteId: { type: String, required: true },
-          completedAt: { type: Date, default: Date.now },
-          timeSpent: { type: Number, default: 0 }, // in seconds
-          attempts: { type: Number, default: 1 },
-        },
-      ],
       completionPercentage: {
         type: Number,
         default: 0,
         min: 0,
         max: 100,
       },
-      lastAccessedNote: {
-        noteId: String,
-        accessedAt: Date,
+      totalTimeSpent: {
+        type: Number,
+        default: 0, 
       },
-      totalTimeSpent: { type: Number, default: 0 },
-      streakDays: { type: Number, default: 0 },
-      lastActivityDate: { type: Date, default: Date.now },
+      lastAccessedAt: {
+        type: Date,
+        default: Date.now,
+      },
+      itemsProgress: [ProgressItemSchema],
+      completedLessons: {
+        type: Number,
+        default: 0,
+      },
+      totalLessons: {
+        type: Number,
+        default: 0,
+      },
+      completedVideos: {
+        type: Number,
+        default: 0,
+      },
+      totalVideos: {
+        type: Number,
+        default: 0,
+      },
+      completedNotes: {
+        type: Number,
+        default: 0,
+      },
+      totalNotes: {
+        type: Number,
+        default: 0,
+      },
     },
+
+    // Payment information
     paymentInfo: {
-      amount: Number,
-      currency: { type: String, default: "NPR" },
+      amount: {
+        type: Number,
+        default: 0,
+      },
+      currency: {
+        type: String,
+        default: "USD",
+      },
       paymentMethod: String,
       transactionId: String,
       paymentDate: Date,
@@ -74,93 +118,112 @@ const EnrollmentSchema = new Schema(
         default: "completed",
       },
     },
-    certificate: {
-      issued: { type: Boolean, default: false },
-      issuedDate: Date,
-      certificateId: String,
-      downloadUrl: String,
-    },
-    accessSettings: {
-      expiryDate: Date,
-      maxDevices: { type: Number, default: 3 },
-      downloadAllowed: { type: Boolean, default: false },
-      offlineAccess: { type: Boolean, default: true },
-    },
-    feedback: {
-      rating: { type: Number, min: 1, max: 5 },
-      review: String,
-      reviewDate: Date,
-    },
-    notes: [
-      {
-        content: String,
-        createdAt: { type: Date, default: Date.now },
-        noteType: {
-          type: String,
-          enum: ["personal", "bookmark", "question"],
-          default: "personal",
-        },
+
+    // Completion and certification
+    completion: {
+      isCompleted: {
+        type: Boolean,
+        default: false,
       },
-    ],
+      completedAt: Date,
+      certificateIssued: {
+        type: Boolean,
+        default: false,
+      },
+      certificateId: String,
+      certificateUrl: String,
+      finalScore: Number, 
+    },
+
+    // Feedback and rating
+    feedback: {
+      rating: {
+        type: Number,
+        min: 1,
+        max: 5,
+      },
+      review: String,
+      feedbackDate: Date,
+    },
+
+    // Access control
+    accessSettings: {
+      expiryDate: Date, // for time-limited courses
+      downloadAllowed: {
+        type: Boolean,
+        default: false,
+      },
+      offlineAccess: {
+        type: Boolean,
+        default: false,
+      },
+    },
+
+    // Metadata
+    metadata: {
+      enrollmentSource: {
+        type: String,
+        enum: ["website", "mobile_app", "admin", "bulk_import"],
+        default: "website",
+      },
+      deviceInfo: String,
+      ipAddress: String,
+      referralCode: String,
+    },
   },
   {
     timestamps: true,
-    indexes: [
-      { "student._id": 1, "course._id": 1 },
-      { "course._id": 1 },
-      { "student._id": 1 },
-      { status: 1 },
-      { enrollmentDate: -1 },
-    ],
+    toJSON: { virtuals: true },
+    toObject: { virtuals: true },
   }
 );
 
-// Compound unique index to prevent duplicate enrollments
-EnrollmentSchema.index({ "student._id": 1, "course._id": 1 }, { unique: true });
+// Virtual for overall progress percentage
+EnrollmentSchema.virtual("overallProgress").get(function () {
+  const totalItems =
+    this.progress.totalLessons +
+    this.progress.totalVideos +
+    this.progress.totalNotes;
+  const completedItems =
+    this.progress.completedLessons +
+    this.progress.completedVideos +
+    this.progress.completedNotes;
 
-// Virtual for course completion status
-EnrollmentSchema.virtual("isCompleted").get(function () {
-  return this.progress.completionPercentage >= 100;
+  if (totalItems === 0) return 0;
+  return Math.round((completedItems / totalItems) * 100);
 });
 
-// Virtual for days since enrollment
-EnrollmentSchema.virtual("daysSinceEnrollment").get(function () {
-  return Math.floor(
-    (Date.now() - this.enrollmentDate.getTime()) / (1000 * 60 * 60 * 24)
-  );
+// Virtual for time spent in hours
+EnrollmentSchema.virtual("timeSpentHours").get(function () {
+  return Math.round((this.progress.totalTimeSpent / 3600) * 100) / 100;
 });
 
-// Virtual for average time per note
-EnrollmentSchema.virtual("averageTimePerNote").get(function () {
-  const completedCount = this.progress.completedNotes.length;
-  return completedCount > 0
-    ? Math.round(this.progress.totalTimeSpent / completedCount)
-    : 0;
-});
-
-// Pre-save middleware to update completion percentage
+// Pre-save middleware to update completion status
 EnrollmentSchema.pre("save", function (next) {
-  if (this.course.totalNotes > 0) {
-    this.progress.completionPercentage = Math.round(
-      (this.progress.completedNotes.length / this.course.totalNotes) * 100
-    );
+  // Update completion percentage
+  this.progress.completionPercentage = this.overallProgress;
+
+  // Check if course is completed
+  if (
+    this.progress.completionPercentage >= 100 &&
+    !this.completion.isCompleted
+  ) {
+    this.completion.isCompleted = true;
+    this.completion.completedAt = new Date();
+    this.status = "completed";
   }
 
-  // Update streak days
-  const today = new Date();
-  const lastActivity = new Date(this.progress.lastActivityDate);
-  const daysDiff = Math.floor(
-    (today.getTime() - lastActivity.getTime()) / (1000 * 60 * 60 * 24)
-  );
-
-  if (daysDiff === 1) {
-    this.progress.streakDays += 1;
-  } else if (daysDiff > 1) {
-    this.progress.streakDays = 1;
-  }
-
-  this.progress.lastActivityDate = today;
   next();
+});
+
+// Index for better performance
+EnrollmentSchema.index({ "student._id": 1, "course._id": 1 }, { unique: true });
+EnrollmentSchema.index({ "course._id": 1, status: 1 });
+EnrollmentSchema.index({ "student._id": 1, status: 1 });
+EnrollmentSchema.index({ enrollmentDate: 1 });
+EnrollmentSchema.index({
+  "completion.isCompleted": 1,
+  "completion.completedAt": 1,
 });
 
 const Enrollment = models?.Enrollment || model("Enrollment", EnrollmentSchema);

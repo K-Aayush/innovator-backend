@@ -7,7 +7,7 @@ const {
   generateCertificate,
   deleteCertificate,
   getCertificateStats,
-} = require("./certificate.controller");
+} = require("./certificate.methods");
 
 router.get("/certificates/generated/:type/:userId/:filename", serveCertificate);
 router.post(

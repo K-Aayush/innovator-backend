@@ -1,7 +1,6 @@
 const basicMiddleware = require("../../middlewares/basicMiddleware");
 const AdminFiles = require("../../utils/fileProcessor/multer.courses");
 
-// Import management functions
 const {
   // Category Management
   CreateParentCategory,
@@ -45,6 +44,9 @@ const {
   GetCategoryHierarchy,
 } = require("./course.hierarchy.display");
 
+// Import enrollment routes
+const enrollmentRoutes = require("./enrollment.routes");
+
 const router = require("express").Router();
 
 // ==================== PUBLIC DISPLAY ROUTES ====================
@@ -66,6 +68,9 @@ router.get("/parent-categories/:parentId/notes", GetNotesByParentCategory);
 
 // Get complete category hierarchy
 router.get("/hierarchy", GetCategoryHierarchy);
+
+// Include enrollment routes
+router.use("/", enrollmentRoutes);
 
 // ==================== ADMIN CATEGORY MANAGEMENT ====================
 

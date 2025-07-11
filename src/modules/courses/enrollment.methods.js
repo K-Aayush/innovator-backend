@@ -6,6 +6,8 @@ const Notification = require("../notifications/notification.model");
 const GenRes = require("../../utils/routers/GenRes");
 const { isValidObjectId } = require("mongoose");
 const FCMHandler = require("../../utils/notification/fcmHandler");
+const CertificateGenerator = require("./certificate.generator");
+const path = require("path");
 
 // Enroll in a course
 const EnrollInCourse = async (req, res) => {
@@ -572,7 +574,7 @@ const issueCertificate = async (enrollment) => {
     const course = await EnhancedCourse.findById(enrollment.course._id).lean();
     if (!course) return;
 
-    // Create certificate
+    // Create certificate record in database
     const certificate = new Certificate({
       student: enrollment.student,
       course: {
@@ -593,11 +595,63 @@ const issueCertificate = async (enrollment) => {
 
     await certificate.save();
 
-    // Update enrollment with certificate info
-    enrollment.completion.certificateIssued = true;
-    enrollment.completion.certificateId = certificate.certificateId;
-    enrollment.completion.certificateUrl = `/certificates/${certificate.certificateId}`;
-    await enrollment.save();
+    // Prepare certificate data
+    const certificateData = {
+      certificateId: certificate.certificateId,
+      studentName: enrollment.student.name,
+      courseName: course.title,
+      completionDate: enrollment.completion.completedAt,
+      instructor: course.instructor,
+      verificationCode: certificate.certificate.verificationCode,
+      timeSpent: Math.round(enrollment.progress.totalTimeSpent / 3600), // Convert to hours
+      issuer: certificate.metadata.issuer.name,
+    };
+
+    // Create certificate directory structure similar to multer
+    const certificateDir = path.join(
+      process.cwd(),
+      "certificates",
+      "generated",
+      "course",
+      enrollment.student._id
+    );
+
+    // Generate and save the certificate HTML file
+    const certificateResult = await CertificateGenerator.saveCertificateFile(
+      certificateData,
+      certificateDir,
+      "course"
+    );
+
+    if (certificateResult.success) {
+      // Update certificate record with file URLs
+      certificate.certificate.certificateUrl = certificateResult.url;
+      certificate.certificate.downloadUrl = certificateResult.url;
+      await certificate.save();
+
+      // Update enrollment with certificate info
+      enrollment.completion.certificateIssued = true;
+      enrollment.completion.certificateId = certificate.certificateId;
+      enrollment.completion.certificateUrl = certificateResult.url;
+      await enrollment.save();
+
+      console.log(
+        `Certificate generated successfully: ${certificateResult.filepath}`
+      );
+    } else {
+      console.error(
+        `Failed to generate certificate file: ${certificateResult.error}`
+      );
+      // Still update enrollment even if file generation fails
+      enrollment.completion.certificateIssued = true;
+      enrollment.completion.certificateId = certificate.certificateId;
+      enrollment.completion.certificateUrl =
+        CertificateGenerator.getCertificateUrl(
+          certificate.certificateId,
+          "course"
+        );
+      await enrollment.save();
+    }
 
     // Send notification to student
     const notification = new Notification({
@@ -616,6 +670,8 @@ const issueCertificate = async (enrollment) => {
         itemId: course._id.toString(),
         itemType: "certificate",
         certificateId: certificate.certificateId,
+        certificateUrl: certificate.certificate.certificateUrl,
+        verificationCode: certificate.certificate.verificationCode,
       },
     });
 
@@ -624,12 +680,14 @@ const issueCertificate = async (enrollment) => {
     // Send FCM notification
     try {
       await FCMHandler.sendToUser(enrollment.student._id, {
-        title: "Certificate Earned!",
+        title: "Certificate Earned! 🎉",
         body: `Congratulations! You've completed ${course.title}`,
         type: "certificate_earned",
         data: {
           courseId: course._id.toString(),
           certificateId: certificate.certificateId,
+          certificateUrl: certificate.certificate.certificateUrl,
+          verificationUrl: certificate.verification.verificationUrl,
         },
       });
     } catch (fcmError) {
@@ -637,10 +695,13 @@ const issueCertificate = async (enrollment) => {
     }
 
     console.log(
-      `Certificate issued for ${enrollment.student.name} - Course: ${course.title}`
+      `Certificate issued for ${enrollment.student.name} - Course: ${course.title} - Certificate ID: ${certificate.certificateId}`
     );
+
+    return certificate;
   } catch (error) {
     console.error("Error issuing certificate:", error);
+    throw error;
   }
 };
 
@@ -655,12 +716,28 @@ const GetUserCertificates = async (req, res) => {
       .sort({ "certificate.issuedAt": -1 })
       .lean();
 
+    // Add view URLs for each certificate
+    const certificatesWithUrls = certificates.map((cert) => ({
+      ...cert,
+      viewUrl: CertificateGenerator.getCertificateUrl(
+        cert.certificateId,
+        "course"
+      ),
+      verificationUrl: CertificateGenerator.getVerificationUrl(
+        cert.certificate.verificationCode
+      ),
+      fileExists: CertificateGenerator.certificateExists(
+        cert.certificateId,
+        "course"
+      ),
+    }));
+
     return res
       .status(200)
       .json(
         GenRes(
           200,
-          certificates,
+          certificatesWithUrls,
           null,
           `Retrieved ${certificates.length} certificates`
         )
@@ -705,6 +782,11 @@ const VerifyCertificate = async (req, res) => {
             completionDate: certificate.enrollment.completionDate,
             issuedAt: certificate.certificate.issuedAt,
             instructor: certificate.course.instructor,
+            timeSpent: certificate.enrollment.timeSpent,
+            level: certificate.course.level,
+            duration: certificate.course.duration,
+            verificationUrl: certificate.verification.verificationUrl,
+            certificateUrl: certificate.certificate.certificateUrl,
           },
         },
         null,
@@ -717,6 +799,194 @@ const VerifyCertificate = async (req, res) => {
   }
 };
 
+// Download certificate
+const DownloadCertificate = async (req, res) => {
+  try {
+    const { certificateId } = req.params;
+    const user = req.user;
+
+    // Find certificate and verify ownership
+    const certificate = await Certificate.findOne({
+      certificateId,
+      "student._id": user._id,
+    }).lean();
+
+    if (!certificate) {
+      return res
+        .status(404)
+        .json(
+          GenRes(
+            404,
+            null,
+            { error: "Certificate not found" },
+            "Certificate not found or access denied"
+          )
+        );
+    }
+
+    // Check if certificate file exists
+    const fileExists = CertificateGenerator.certificateExists(
+      certificateId,
+      "course"
+    );
+
+    if (!fileExists) {
+      // Try to regenerate the certificate if file is missing
+      console.log(
+        `Certificate file missing for ${certificateId}, attempting to regenerate...`
+      );
+
+      const certificateData = {
+        certificateId: certificate.certificateId,
+        studentName: certificate.student.name,
+        courseName: certificate.course.title,
+        completionDate: certificate.enrollment.completionDate,
+        instructor: certificate.course.instructor,
+        verificationCode: certificate.certificate.verificationCode,
+        timeSpent: certificate.enrollment.timeSpent,
+        issuer: certificate.metadata.issuer.name,
+      };
+
+      const certificateDir = path.join(
+        process.cwd(),
+        "certificates",
+        "generated",
+        "course",
+        user._id
+      );
+
+      const regenerateResult = await CertificateGenerator.saveCertificateFile(
+        certificateData,
+        certificateDir,
+        "course"
+      );
+
+      if (!regenerateResult.success) {
+        return res
+          .status(500)
+          .json(
+            GenRes(
+              500,
+              null,
+              { error: "Certificate file not available" },
+              "Certificate file could not be generated"
+            )
+          );
+      }
+    }
+
+    // Return download URL
+    return res.status(200).json(
+      GenRes(
+        200,
+        {
+          certificateId: certificate.certificateId,
+          downloadUrl:
+            certificate.certificate.downloadUrl ||
+            CertificateGenerator.getCertificateUrl(certificateId, "course"),
+          fileName: `${certificate.course.title.replace(
+            /[^a-zA-Z0-9]/g,
+            "_"
+          )}_Certificate.html`,
+          fileExists: true,
+        },
+        null,
+        "Certificate download link generated"
+      )
+    );
+  } catch (error) {
+    console.error("Error downloading certificate:", error);
+    return res.status(500).json(GenRes(500, null, error, error?.message));
+  }
+};
+
+// Regenerate certificate
+const RegenerateCertificate = async (req, res) => {
+  try {
+    const { certificateId } = req.params;
+    const user = req.user;
+
+    // Find certificate and verify ownership
+    const certificate = await Certificate.findOne({
+      certificateId,
+      "student._id": user._id,
+    });
+
+    if (!certificate) {
+      return res
+        .status(404)
+        .json(
+          GenRes(
+            404,
+            null,
+            { error: "Certificate not found" },
+            "Certificate not found or access denied"
+          )
+        );
+    }
+
+    // Regenerate certificate file
+    const certificateData = {
+      certificateId: certificate.certificateId,
+      studentName: certificate.student.name,
+      courseName: certificate.course.title,
+      completionDate: certificate.enrollment.completionDate,
+      instructor: certificate.course.instructor,
+      verificationCode: certificate.certificate.verificationCode,
+      timeSpent: certificate.enrollment.timeSpent,
+      issuer: certificate.metadata.issuer.name,
+    };
+
+    const certificateDir = path.join(
+      process.cwd(),
+      "certificates",
+      "generated",
+      "course",
+      user._id
+    );
+
+    const certificateResult = await CertificateGenerator.saveCertificateFile(
+      certificateData,
+      certificateDir,
+      "course"
+    );
+
+    if (certificateResult.success) {
+      // Update certificate record with new file URL
+      certificate.certificate.certificateUrl = certificateResult.url;
+      certificate.certificate.downloadUrl = certificateResult.downloadUrl;
+      await certificate.save();
+
+      return res.status(200).json(
+        GenRes(
+          200,
+          {
+            certificateId: certificate.certificateId,
+            certificateUrl: certificateResult.downloadUrl,
+            message: "Certificate regenerated successfully",
+          },
+          null,
+          "Certificate regenerated successfully"
+        )
+      );
+    } else {
+      return res
+        .status(500)
+        .json(
+          GenRes(
+            500,
+            null,
+            { error: "Generation failed", details: certificateResult.error },
+            "Failed to regenerate certificate"
+          )
+        );
+    }
+  } catch (error) {
+    console.error("Error regenerating certificate:", error);
+    return res.status(500).json(GenRes(500, null, error, error?.message));
+  }
+};
+
 module.exports = {
   EnrollInCourse,
   UpdateProgress,
@@ -725,4 +995,6 @@ module.exports = {
   GetCourseProgress,
   GetUserCertificates,
   VerifyCertificate,
+  DownloadCertificate,
+  RegenerateCertificate,
 };

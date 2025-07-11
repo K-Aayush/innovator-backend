@@ -1,5 +1,6 @@
 const fs = require("fs").promises;
 const path = require("path");
+const fsSync = require("fs");
 
 class CertificateGenerator {
   constructor() {
@@ -14,6 +15,10 @@ class CertificateGenerator {
     try {
       await fs.mkdir(this.templatePath, { recursive: true });
       await fs.mkdir(this.outputPath, { recursive: true });
+      await fs.mkdir(path.join(this.outputPath, "course"), { recursive: true });
+      await fs.mkdir(path.join(this.outputPath, "subcategory"), {
+        recursive: true,
+      });
     } catch (error) {
       console.error("Error creating certificate directories:", error);
     }
@@ -351,18 +356,24 @@ class CertificateGenerator {
   }
 
   // Save certificate as HTML file
-  async saveCertificate(certificateData) {
+  async saveCertificate(certificateData, certificateType = "course") {
     try {
       const html = this.generateHTMLCertificate(certificateData);
       const filename = `${certificateData.certificateId}.html`;
-      const filepath = path.join(this.outputPath, filename);
+
+      // Create type-specific directory
+      const typeDir = path.join(this.outputPath, certificateType);
+      await fs.mkdir(typeDir, { recursive: true });
+
+      const filepath = path.join(typeDir, filename);
 
       await fs.writeFile(filepath, html, "utf8");
 
       return {
         success: true,
         filepath,
-        url: `/certificates/${filename}`,
+        url: `/certificates/generated/${certificateType}/${filename}`,
+        downloadUrl: `/certificates/generated/${certificateType}/${filename}`,
       };
     } catch (error) {
       console.error("Error saving certificate:", error);
@@ -373,14 +384,85 @@ class CertificateGenerator {
     }
   }
 
+  // Save certificate file with proper directory structure
+  async saveCertificateFile(
+    certificateData,
+    outputDir,
+    certificateType = "course"
+  ) {
+    try {
+      const html = this.generateHTMLCertificate(certificateData);
+      const filename = `${certificateData.certificateId}.html`;
+
+      // Ensure output directory exists
+      if (!fsSync.existsSync(outputDir)) {
+        fsSync.mkdirSync(outputDir, { recursive: true });
+      }
+
+      const filepath = path.join(outputDir, filename);
+
+      // Write file synchronously for immediate availability
+      fsSync.writeFileSync(filepath, html, "utf8");
+
+      // Generate relative URL path
+      const relativePath = path.relative(process.cwd(), filepath);
+      const url = `/${relativePath.replace(/\\/g, "/")}`;
+
+      return {
+        success: true,
+        filepath,
+        url,
+        downloadUrl: url,
+        filename,
+      };
+    } catch (error) {
+      console.error("Error saving certificate file:", error);
+      return {
+        success: false,
+        error: error.message,
+      };
+    }
+  }
   // Generate certificate URL for viewing
-  getCertificateUrl(certificateId) {
-    return `/certificates/${certificateId}.html`;
+  getCertificateUrl(certificateId, certificateType = "course") {
+    return `/certificates/generated/${certificateType}/${certificateId}.html`;
   }
 
   // Generate verification URL
   getVerificationUrl(verificationCode) {
     return `/verify-certificate/${verificationCode}`;
+  }
+
+  // Get certificate file path
+  getCertificateFilePath(certificateId, certificateType = "course") {
+    return path.join(this.outputPath, certificateType, `${certificateId}.html`);
+  }
+
+  // Check if certificate file exists
+  certificateExists(certificateId, certificateType = "course") {
+    const filepath = this.getCertificateFilePath(
+      certificateId,
+      certificateType
+    );
+    return fsSync.existsSync(filepath);
+  }
+
+  // Delete certificate file
+  async deleteCertificate(certificateId, certificateType = "course") {
+    try {
+      const filepath = this.getCertificateFilePath(
+        certificateId,
+        certificateType
+      );
+      if (fsSync.existsSync(filepath)) {
+        await fs.unlink(filepath);
+        return { success: true };
+      }
+      return { success: false, error: "Certificate file not found" };
+    } catch (error) {
+      console.error("Error deleting certificate:", error);
+      return { success: false, error: error.message };
+    }
   }
 }
 

@@ -112,7 +112,7 @@ router.delete("/admin/courses/:courseId", basicMiddleware, DeleteCourse);
 router.put(
   "/admin/courses/:courseId/overview-video",
   basicMiddleware,
-  AdminFiles("private").single("overviewVideo"),
+  AdminFiles("public").single("overviewVideo"),
   UpdateOverviewVideo
 );
 
@@ -148,7 +148,7 @@ router.delete(
 router.post(
   "/admin/courses/:courseId/notes",
   basicMiddleware,
-  AdminFiles("private").single("noteFile"),
+  AdminFiles("public").single("noteFile"),
   AddNote
 );
 
@@ -156,7 +156,7 @@ router.post(
 router.put(
   "/admin/courses/:courseId/notes/:noteId",
   basicMiddleware,
-  AdminFiles("private").single("noteFile"),
+  AdminFiles("public").single("noteFile"),
   UpdateNote
 );
 
@@ -173,7 +173,7 @@ router.delete(
 router.post(
   "/admin/courses/:courseId/videos",
   basicMiddleware,
-  AdminFiles("private").single("videoFile"),
+  AdminFiles("public").single("videoFile"),
   AddVideo
 );
 
@@ -181,7 +181,7 @@ router.post(
 router.put(
   "/admin/courses/:courseId/videos/:videoId",
   basicMiddleware,
-  AdminFiles("private").single("videoFile"),
+  AdminFiles("public").single("videoFile"),
   UpdateVideo
 );
 
@@ -198,14 +198,14 @@ router.delete(
 router.post(
   "/admin/courses/:courseId/overview-video",
   basicMiddleware,
-  AdminFiles("private").single("overviewVideo"),
+  AdminFiles("public").single("overviewVideo"),
   AddOverviewVideo
 );
 
 router.put(
   "/admin/courses/:courseId/overview-video",
   basicMiddleware,
-  AdminFiles("private").single("overviewVideo"),
+  AdminFiles("public").single("overviewVideo"),
   UpdateOverviewVideo
 );
 

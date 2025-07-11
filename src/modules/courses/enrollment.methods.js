@@ -1,12 +1,12 @@
 const { isValidObjectId } = require("mongoose");
 const GenRes = require("../../utils/routers/GenRes");
 const Enrollment = require("./enrollment.model");
-const Course = require("./courses.model");
+const EnhancedCourse = require("./course.enhanced.model");
 const User = require("../user/user.model");
 const Notification = require("../notifications/notification.model");
 const FCMHandler = require("../../utils/notification/fcmHandler");
 
-// Enroll in course with free course handling
+// Enroll in a specific course (not subcategory)
 const EnrollInCourse = async (req, res) => {
   try {
     const { courseId } = req.params;
@@ -21,8 +21,8 @@ const EnrollInCourse = async (req, res) => {
         );
     }
 
-    // Find the course
-    const course = await Course.findById(courseId);
+    // Find the specific course
+    const course = await EnhancedCourse.findById(courseId);
     if (!course) {
       return res
         .status(404)
@@ -45,7 +45,7 @@ const EnrollInCourse = async (req, res) => {
         );
     }
 
-    // Check if user is already enrolled
+    // Check if user is already enrolled in this specific course
     const existingEnrollment = await Enrollment.findOne({
       "student._id": user._id,
       "course._id": courseId,
@@ -79,7 +79,7 @@ const EnrollInCourse = async (req, res) => {
       expiryDate.setDate(expiryDate.getDate() + accessDuration);
     }
 
-    // Create enrollment with appropriate payment info
+    // Create enrollment with course-specific data
     const enrollmentData = {
       student: student.toObject(),
       course: {
@@ -88,14 +88,19 @@ const EnrollInCourse = async (req, res) => {
         thumbnail: course.thumbnail,
         price: course.price,
         totalNotes: course.notes?.length || 0,
-        category: course.category,
+        totalVideos: course.videos?.length || 0,
+        totalLessons: course.lessons?.length || 0,
+        parentCategory: course.parentCategory,
+        subcategory: course.subcategory,
         author: course.author,
         isFree,
+        duration: course.duration,
+        level: course.level,
       },
       accessSettings: {
         expiryDate,
         maxDevices: 3,
-        downloadAllowed: isFree || course.price?.usd === 0, // Free courses allow downloads
+        downloadAllowed: isFree || course.settings?.allowDownloads || false,
         offlineAccess: true,
       },
     };
@@ -139,7 +144,7 @@ const EnrollInCourse = async (req, res) => {
     await enrollment.save();
 
     // Update course enrollment count
-    await Course.findByIdAndUpdate(courseId, {
+    await EnhancedCourse.findByIdAndUpdate(courseId, {
       $inc: { enrollmentCount: 1 },
     });
 
@@ -164,6 +169,9 @@ const EnrollInCourse = async (req, res) => {
         itemType: "course",
         enrollmentId: enrollment._id.toString(),
         isFree,
+        courseTitle: course.title,
+        subcategoryName: course.subcategory.name,
+        parentCategoryName: course.parentCategory.name,
       },
     });
 
@@ -181,6 +189,7 @@ const EnrollInCourse = async (req, res) => {
           courseId,
           enrollmentId: enrollment._id.toString(),
           isFree: isFree.toString(),
+          courseTitle: course.title,
         },
       });
     } catch (fcmError) {
@@ -193,9 +202,16 @@ const EnrollInCourse = async (req, res) => {
         {
           ...enrollment.toObject(),
           enrollmentType: isFree ? "free" : "paid",
+          courseDetails: {
+            title: course.title,
+            subcategory: course.subcategory.name,
+            parentCategory: course.parentCategory.name,
+            level: course.level,
+            duration: course.duration,
+          },
         },
         null,
-        `Successfully enrolled in ${isFree ? "free" : "paid"} course`
+        `Successfully enrolled in ${isFree ? "free" : "paid"} course: ${course.title}`
       )
     );
   } catch (error) {
@@ -204,7 +220,7 @@ const EnrollInCourse = async (req, res) => {
   }
 };
 
-// Get user's enrollments with enhanced filtering
+// Get user's course enrollments with enhanced filtering
 const GetUserEnrollments = async (req, res) => {
   try {
     const {
@@ -214,6 +230,9 @@ const GetUserEnrollments = async (req, res) => {
       sortBy = "enrollmentDate",
       sortOrder = "desc",
       courseType = "all", // all, free, paid
+      subcategoryId,
+      parentCategoryId,
+      level,
     } = req.query;
     const userId = req.user._id;
 
@@ -221,6 +240,7 @@ const GetUserEnrollments = async (req, res) => {
     const limitNum = Math.min(parseInt(limit), 50);
 
     const filters = { "student._id": userId };
+    
     if (status) {
       filters.status = status;
     }
@@ -230,6 +250,21 @@ const GetUserEnrollments = async (req, res) => {
       filters["course.isFree"] = true;
     } else if (courseType === "paid") {
       filters["course.isFree"] = { $ne: true };
+    }
+
+    // Filter by subcategory
+    if (subcategoryId && isValidObjectId(subcategoryId)) {
+      filters["course.subcategory._id"] = subcategoryId;
+    }
+
+    // Filter by parent category
+    if (parentCategoryId && isValidObjectId(parentCategoryId)) {
+      filters["course.parentCategory._id"] = parentCategoryId;
+    }
+
+    // Filter by course level
+    if (level && ["beginner", "intermediate", "advanced"].includes(level)) {
+      filters["course.level"] = level;
     }
 
     const sortDirection = sortOrder === "desc" ? -1 : 1;
@@ -277,6 +312,12 @@ const GetUserEnrollments = async (req, res) => {
           : null,
         canDownload: enrollment.accessSettings.downloadAllowed,
       },
+      courseInfo: {
+        subcategory: enrollment.course.subcategory?.name || "Unknown",
+        parentCategory: enrollment.course.parentCategory?.name || "Unknown",
+        level: enrollment.course.level || "beginner",
+        totalContent: (enrollment.course.totalNotes || 0) + (enrollment.course.totalVideos || 0),
+      },
     }));
 
     // Calculate summary statistics
@@ -300,6 +341,18 @@ const GetUserEnrollments = async (req, res) => {
               0
             ) / enrollments.length
           : 0,
+      // Category breakdown
+      categoryBreakdown: enrollments.reduce((acc, e) => {
+        const category = e.course.parentCategory?.name || "Unknown";
+        acc[category] = (acc[category] || 0) + 1;
+        return acc;
+      }, {}),
+      // Level breakdown
+      levelBreakdown: enrollments.reduce((acc, e) => {
+        const level = e.course.level || "beginner";
+        acc[level] = (acc[level] || 0) + 1;
+        return acc;
+      }, {}),
     };
 
     return res.status(200).json(
@@ -315,13 +368,145 @@ const GetUserEnrollments = async (req, res) => {
             hasMore: (pageNum + 1) * limitNum < total,
           },
           summary,
+          filters: {
+            courseType,
+            subcategoryId,
+            parentCategoryId,
+            level,
+            status,
+          },
         },
         null,
-        `Retrieved ${enrollments.length} enrollments`
+        `Retrieved ${enrollments.length} course enrollments`
       )
     );
   } catch (error) {
     console.error("Error getting user enrollments:", error);
+    return res.status(500).json(GenRes(500, null, error, error?.message));
+  }
+};
+
+// Check if user is enrolled in a specific course
+const CheckCourseEnrollment = async (req, res) => {
+  try {
+    const { courseId } = req.params;
+    const userId = req.user._id;
+
+    if (!isValidObjectId(courseId)) {
+      return res
+        .status(400)
+        .json(
+          GenRes(400, null, { error: "Invalid course ID" }, "Invalid course ID")
+        );
+    }
+
+    const enrollment = await Enrollment.findOne({
+      "student._id": userId,
+      "course._id": courseId,
+    }).lean();
+
+    const isEnrolled = !!enrollment;
+    const enrollmentStatus = enrollment?.status || null;
+    const hasAccess = enrollment && 
+      enrollment.status === "active" && 
+      (!enrollment.accessSettings.expiryDate || 
+       new Date() <= enrollment.accessSettings.expiryDate);
+
+    return res.status(200).json(
+      GenRes(
+        200,
+        {
+          isEnrolled,
+          enrollmentStatus,
+          hasAccess,
+          enrollment: enrollment || null,
+        },
+        null,
+        "Enrollment status checked"
+      )
+    );
+  } catch (error) {
+    console.error("Error checking course enrollment:", error);
+    return res.status(500).json(GenRes(500, null, error, error?.message));
+  }
+};
+
+// Get enrollments by subcategory (for analytics)
+const GetEnrollmentsBySubcategory = async (req, res) => {
+  try {
+    const { subcategoryId } = req.params;
+    const { page = 0, limit = 20 } = req.query;
+
+    if (!isValidObjectId(subcategoryId)) {
+      return res
+        .status(400)
+        .json(
+          GenRes(
+            400,
+            null,
+            { error: "Invalid subcategory ID" },
+            "Invalid subcategory ID"
+          )
+        );
+    }
+
+    const pageNum = parseInt(page);
+    const limitNum = Math.min(parseInt(limit), 50);
+
+    // Get all courses in this subcategory
+    const courses = await EnhancedCourse.find({
+      "subcategory._id": subcategoryId,
+      isPublished: true,
+    }).select("_id title enrollmentCount").lean();
+
+    const courseIds = courses.map(c => c._id.toString());
+
+    // Get enrollments for these courses
+    const [enrollments, total] = await Promise.all([
+      Enrollment.find({
+        "course._id": { $in: courseIds },
+      })
+        .sort({ enrollmentDate: -1 })
+        .skip(pageNum * limitNum)
+        .limit(limitNum)
+        .lean(),
+      Enrollment.countDocuments({
+        "course._id": { $in: courseIds },
+      }),
+    ]);
+
+    // Calculate statistics
+    const stats = {
+      totalCourses: courses.length,
+      totalEnrollments: total,
+      averageEnrollmentsPerCourse: courses.length > 0 ? total / courses.length : 0,
+      courseBreakdown: courses.map(course => ({
+        courseId: course._id,
+        title: course.title,
+        enrollmentCount: course.enrollmentCount || 0,
+      })),
+    };
+
+    return res.status(200).json(
+      GenRes(
+        200,
+        {
+          enrollments,
+          statistics: stats,
+          pagination: {
+            page: pageNum,
+            limit: limitNum,
+            total,
+            pages: Math.ceil(total / limitNum),
+            hasMore: (pageNum + 1) * limitNum < total,
+          },
+        },
+        null,
+        `Retrieved ${enrollments.length} enrollments for subcategory`
+      )
+    );
+  } catch (error) {
+    console.error("Error getting enrollments by subcategory:", error);
     return res.status(500).json(GenRes(500, null, error, error?.message));
   }
 };
@@ -367,7 +552,7 @@ const UpdateCourseProgress = async (req, res) => {
         );
     }
 
-    // Find enrollment
+    // Find enrollment for this specific course
     const enrollment = await Enrollment.findOne({
       "student._id": userId,
       "course._id": courseId,
@@ -405,7 +590,7 @@ const UpdateCourseProgress = async (req, res) => {
     }
 
     // Get course to validate note exists
-    const course = await Course.findById(courseId).select("notes");
+    const course = await EnhancedCourse.findById(courseId).select("notes");
     if (!course) {
       return res
         .status(404)
@@ -511,6 +696,11 @@ const UpdateCourseProgress = async (req, res) => {
           canRate:
             enrollment.progress.completionPercentage >=
             (enrollment.course.isFree ? 0 : 25),
+          courseInfo: {
+            title: enrollment.course.title,
+            subcategory: enrollment.course.subcategory?.name,
+            parentCategory: enrollment.course.parentCategory?.name,
+          },
         },
         null,
         "Progress updated successfully"
@@ -522,7 +712,7 @@ const UpdateCourseProgress = async (req, res) => {
   }
 };
 
-// Get course progress
+// Get course progress for a specific course
 const GetCourseProgress = async (req, res) => {
   try {
     const { courseId } = req.params;
@@ -555,7 +745,7 @@ const GetCourseProgress = async (req, res) => {
     }
 
     // Get detailed course information
-    const course = await Course.findById(courseId).select("notes title").lean();
+    const course = await EnhancedCourse.findById(courseId).select("notes videos lessons title").lean();
 
     // Create detailed progress report
     const detailedProgress = {
@@ -592,29 +782,34 @@ const GetCourseProgress = async (req, res) => {
           canDownload: enrollment.accessSettings.downloadAllowed,
         },
       },
-      courseNotes: course.notes.map((note) => {
-        const completedNote = enrollment.progress.completedNotes.find(
-          (cn) => cn.noteId === note._id.toString()
-        );
-        return {
-          _id: note._id,
-          name: note.name,
-          fileType: note.fileType,
-          premium: note.premium,
-          completed: !!completedNote,
-          completedAt: completedNote?.completedAt,
-          timeSpent: completedNote?.timeSpent || 0,
-          attempts: completedNote?.attempts || 0,
-          difficulty: completedNote?.difficulty,
-          notes: completedNote?.notes,
-        };
-      }),
+      courseContent: {
+        notes: course.notes?.map((note) => {
+          const completedNote = enrollment.progress.completedNotes.find(
+            (cn) => cn.noteId === note._id.toString()
+          );
+          return {
+            _id: note._id,
+            title: note.title,
+            fileType: note.fileType,
+            premium: note.premium,
+            lessonId: note.lessonId,
+            completed: !!completedNote,
+            completedAt: completedNote?.completedAt,
+            timeSpent: completedNote?.timeSpent || 0,
+            attempts: completedNote?.attempts || 0,
+            difficulty: completedNote?.difficulty,
+            notes: completedNote?.notes,
+          };
+        }) || [],
+        videos: course.videos || [],
+        lessons: course.lessons || [],
+      },
     };
 
     return res
       .status(200)
       .json(
-        GenRes(200, detailedProgress, null, "Progress retrieved successfully")
+        GenRes(200, detailedProgress, null, "Course progress retrieved successfully")
       );
   } catch (error) {
     console.error("Error getting course progress:", error);
@@ -622,7 +817,7 @@ const GetCourseProgress = async (req, res) => {
   }
 };
 
-// Add personal note
+// Add personal note to course enrollment
 const AddPersonalNote = async (req, res) => {
   try {
     const { courseId } = req.params;
@@ -678,7 +873,7 @@ const AddPersonalNote = async (req, res) => {
   }
 };
 
-// Submit course feedback
+// Submit course feedback for specific course
 const SubmitCourseFeedback = async (req, res) => {
   try {
     const { courseId } = req.params;
@@ -742,6 +937,7 @@ const SubmitCourseFeedback = async (req, res) => {
 
     await enrollment.save();
 
+    // Update course rating
     const allRatings = await Enrollment.find({
       "course._id": courseId,
       "feedback.rating": { $exists: true },
@@ -754,7 +950,7 @@ const SubmitCourseFeedback = async (req, res) => {
           0
         ) / allRatings.length;
 
-      await Course.findByIdAndUpdate(courseId, {
+      await EnhancedCourse.findByIdAndUpdate(courseId, {
         $set: {
           "rating.average": Math.round(averageRating * 10) / 10,
           "rating.count": allRatings.length,
@@ -778,14 +974,14 @@ const SubmitCourseFeedback = async (req, res) => {
   }
 };
 
-// Get enrollment analytics (for course authors)
+// Get enrollment analytics for course authors
 const GetEnrollmentAnalytics = async (req, res) => {
   try {
     const { courseId } = req.params;
     const userId = req.user._id;
 
     // Verify user is the course author or admin
-    const course = await Course.findById(courseId).select("author");
+    const course = await Enhance db.Course.findById(courseId).select("author title");
     if (!course) {
       return res
         .status(404)
@@ -812,7 +1008,7 @@ const GetEnrollmentAnalytics = async (req, res) => {
       {
         $group: {
           _id: null,
-          totalEnrollments: { $sum: 1 },
+          totalEnrollments: {$sum: 1 },
           freeEnrollments: {
             $sum: { $cond: ["$course.isFree", 1, 0] },
           },
@@ -820,7 +1016,7 @@ const GetEnrollmentAnalytics = async (req, res) => {
             $sum: { $cond: [{ $not: "$course.isFree" }, 1, 0] },
           },
           activeEnrollments: {
-            $sum: { $cond: [{ $eq: ["$status", "active"] }, 1, 0] },
+            $sum: {$cond: [{ $eq: ["$status", "active"] }, 1, 0] },
           },
           completedEnrollments: {
             $sum: {
@@ -847,18 +1043,22 @@ const GetEnrollmentAnalytics = async (req, res) => {
           count: { $sum: 1 },
         },
       },
-      { $sort: { "_id.year": 1, "_id.month": 1 } },
+      { $sort: { "_id.year": 1,  "_id.month": 1 } },
     ]);
 
     return res.status(200).json(
       GenRes(
         200,
         {
+          course: {
+            id: courseId,
+            title: course.title,
+          },
           analytics: analytics[0] || {},
           enrollmentTrends,
         },
         null,
-        "Analytics retrieved successfully"
+        "Course analytics retrieved successfully"
       )
     );
   } catch (error) {
@@ -870,6 +1070,8 @@ const GetEnrollmentAnalytics = async (req, res) => {
 module.exports = {
   EnrollInCourse,
   GetUserEnrollments,
+  CheckCourseEnrollment,
+  GetEnrollmentsBySubcategory,
   UpdateCourseProgress,
   GetCourseProgress,
   AddPersonalNote,

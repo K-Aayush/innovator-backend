@@ -1,7 +1,7 @@
 const redis = require("../../config/connectRedis");
 const GenRes = require("../routers/GenRes");
 const transporter = require("../../config/Mailer");
-// Send OTP
+
 const setCode = async (email) => {
   try {
     const otp = Math.floor(100000 + Math.random() * 900000);
@@ -9,14 +9,29 @@ const setCode = async (email) => {
     const value = JSON.stringify({ code: otp, count: 0 });
 
     // Set OTP with expiry
-    await redis.setEx(key, 300, value); // 300 seconds = 5 mins
+    await redis.setEx(key, 300, value);
 
     // Send email
     await transporter.sendMail({
       from: process.env.EMAIL,
       to: email,
-      subject: "Your OTP Code",
-      html: `<p>Your OTP code is <strong>${otp}</strong>. It will expire in 5 minutes.</p><p>Do not share this with anyone.</p>`,
+      subject: "Email Verification Code",
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px;">
+          <h2 style="color: #4A90E2;">Email Verification</h2>
+          <p>Thank you for registering! Please use the following verification code to complete your registration:</p>
+          <div style="background-color: #f5f5f5; padding: 20px; border-radius: 5px; margin: 20px 0; text-align: center;">
+            <h1 style="color: #4A90E2; font-size: 32px; margin: 0;">${otp}</h1>
+          </div>
+          <p><strong>Important:</strong></p>
+          <ul>
+            <li>This code will expire in 5 minutes</li>
+            <li>Do not share this code with anyone</li>
+            <li>If you didn't request this verification, please ignore this email</li>
+          </ul>
+          <p>Best regards,<br>Your App Team</p>
+        </div>
+      `,
     });
 
     return GenRes(200, null, null, "Otp sent!");
@@ -65,7 +80,7 @@ const verifyCode = async (email, code) => {
       }
     }
 
-    await redis.del(key); // One-time use
+    await redis.del(key);
     return GenRes(200, null, null, "OTP verified successfully");
   } catch (err) {
     return GenRes(500, null, err, err?.message);

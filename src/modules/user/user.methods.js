@@ -564,6 +564,157 @@ const GetUserSupport = async (req, res) => {
   }
 };
 
+//Email verification
+const VerifyEmail = async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+
+    if (!email || !otp) {
+      return res
+        .status(400)
+        .json(
+          GenRes(
+            400,
+            null,
+            { error: "Email and OTP are required" },
+            "Please provide email and OTP"
+          )
+        );
+    }
+
+    // Verify OTP
+    const verifyResult = await verifyCode(email.toLowerCase(), otp);
+    if (verifyResult.status !== 200) {
+      return res.status(verifyResult.status).json(verifyResult);
+    }
+
+    // Update user verification status
+    const updatedUser = await User.findOneAndUpdate(
+      { email: email.toLowerCase() },
+      {
+        $set: {
+          emailVerified: true,
+          emailVerificationRequired: false,
+          emailVerifiedAt: new Date(),
+        },
+      },
+      { new: true }
+    );
+
+    if (!updatedUser) {
+      return res
+        .status(404)
+        .json(GenRes(404, null, { error: "User not found" }, "User not found"));
+    }
+
+    // Send FCM notification for successful verification
+    try {
+      await FCMHandler.sendToUser(updatedUser._id, {
+        title: "Email Verified! 🎉",
+        body: "Your email has been successfully verified. You can now login.",
+        type: "email_verification",
+        data: {
+          timestamp: new Date().toISOString(),
+        },
+      });
+    } catch (fcmError) {
+      console.error("Failed to send FCM notification:", fcmError);
+    }
+
+    return res.status(200).json(
+      GenRes(
+        200,
+        {
+          message: "Email verified successfully",
+          emailVerified: true,
+          canLogin: true,
+        },
+        null,
+        "Email verified successfully. You can now login."
+      )
+    );
+  } catch (error) {
+    console.error("Error verifying email:", error);
+    return res.status(500).json(GenRes(500, null, error, error?.message));
+  }
+};
+
+// Resend verification OTP
+const ResendVerificationOTP = async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res
+        .status(400)
+        .json(
+          GenRes(
+            400,
+            null,
+            { error: "Email is required" },
+            "Please provide email address"
+          )
+        );
+    }
+
+    const user = await User.findOne({ email: email.toLowerCase() });
+    if (!user) {
+      return res
+        .status(404)
+        .json(GenRes(404, null, { error: "User not found" }, "User not found"));
+    }
+
+    // Check if user already verified
+    if (user.emailVerified) {
+      return res
+        .status(400)
+        .json(
+          GenRes(
+            400,
+            null,
+            { error: "Email already verified" },
+            "Email is already verified"
+          )
+        );
+    }
+
+    // Check if user is Google user (shouldn't need verification)
+    if (!user.emailVerificationRequired) {
+      return res
+        .status(400)
+        .json(
+          GenRes(
+            400,
+            null,
+            { error: "Verification not required" },
+            "Email verification is not required for this account"
+          )
+        );
+    }
+
+    // Send new OTP
+    const otpResult = await setCode(email.toLowerCase());
+    if (otpResult.status !== 200) {
+      return res.status(otpResult.status).json(otpResult);
+    }
+
+    return res.status(200).json(
+      GenRes(
+        200,
+        {
+          message: "Verification code sent to your email",
+          canResendAfter: 300,
+        },
+        null,
+        "Verification code sent successfully"
+      )
+    );
+  } catch (error) {
+    console.error("Error resending verification OTP:", error);
+    return res.status(500).json(GenRes(500, null, error, error?.message));
+  }
+};
+
 module.exports = {
   UserExist,
   GetAllUsers,
@@ -579,4 +730,6 @@ module.exports = {
   GetUserReports,
   GetUserSupport,
   GetUserContent,
+  VerifyEmail,
+  ResendVerificationOTP,
 };

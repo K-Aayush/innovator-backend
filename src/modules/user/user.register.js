@@ -1,7 +1,8 @@
 const User = require("./user.model");
 const path = require("path");
-const fs = require("fs"); 
+const fs = require("fs");
 const GenRes = require("../../utils/routers/GenRes");
+const { setCode } = require("../../utils/auth/changePass");
 
 const RegisterUser = async (req, res) => {
   try {
@@ -18,12 +19,18 @@ const RegisterUser = async (req, res) => {
       return res.status(err?.status).json(err);
     }
 
+    const isGoogleRegistration = req?.body?.uid && !req?.body?.password;
+
     const newData = {
       ...req?.body,
+      email,
       level: "bronze",
       role: "user",
       dob: new Date("2000-01-01"),
       phone: "Not provided",
+      isVerified: isGoogleRegistration,
+      emailVerified: isGoogleRegistration,
+      emailVerificationRequired: !isGoogleRegistration,
     };
 
     const newUser = new User(newData);
@@ -36,14 +43,67 @@ const RegisterUser = async (req, res) => {
       console.error("Error creating user directory:", err);
     }
 
+    if (!isGoogleRegistration) {
+      try {
+        const otpResult = await setCode(email);
+        if (otpResult.status !== 200) {
+          console.error("Failed to send verification OTP:", otpResult.error);
+          return res.status(201).json(
+            GenRes(
+              201,
+              {
+                message: "User created but verification email failed to send",
+                requiresVerification: true,
+                canResendOTP: true,
+              },
+              null,
+              "User Created - Please verify email"
+            )
+          );
+        }
+
+        return res.status(201).json(
+          GenRes(
+            201,
+            {
+              message:
+                "User created successfully. Please check your email for verification code.",
+              requiresVerification: true,
+              canResendOTP: false,
+            },
+            null,
+            "User Created - Email Verification Required"
+          )
+        );
+      } catch (otpError) {
+        console.error("Error sending verification OTP:", otpError);
+        return res.status(201).json(
+          GenRes(
+            201,
+            {
+              message: "User created but verification email failed to send",
+              requiresVerification: true,
+              canResendOTP: true,
+            },
+            null,
+            "User Created - Please verify email"
+          )
+        );
+      }
+    }
+
     const response = GenRes(
-      200,
-      { message: "Data saved!" },
+      201,
+      {
+        message: "Google user registered successfully!",
+        requiresVerification: false,
+        emailVerified: true,
+      },
       null,
-      "User Created"
+      "User Created and Verified"
     );
 
-    return res.status(200).json(response);
+    return res.status(201).json(response);
   } catch (error) {
     const response = GenRes(500, null, error, error?.message);
     return res.status(500).json(response);

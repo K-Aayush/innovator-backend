@@ -38,6 +38,11 @@ const UserSchema = new Schema(
     //isverified admin
     isVerified: { type: Boolean, default: false },
 
+    // Email verification
+    emailVerified: { type: Boolean, default: false },
+    emailVerificationRequired: { type: Boolean, default: true },
+    emailVerifiedAt: Date,
+
     // access
     role: gen.required(String, "user", ["user", "editor", "admin", "vendor"]),
     level: gen.required(String, "bronze", ["bronze"]),

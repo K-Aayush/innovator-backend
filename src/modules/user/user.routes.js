@@ -21,6 +21,8 @@ const {
   GetUserReports,
   GetUserSupport,
   GetUserContent,
+  VerifyEmail,
+  ResendVerificationOTP,
 } = require("./user.methods");
 const {
   BlockUser,
@@ -28,7 +30,6 @@ const {
   GetBlockedUsers,
   CheckBlockStatus,
   GetUsersWhoBlockedMe,
-  checkBlockStatus,
 } = require("./block.methods");
 const RegisterUser = require("./user.register");
 
@@ -38,6 +39,10 @@ router.get("/users", GetAllUsers);
 router.get("/user-profile", basicMiddleware, UserProfile);
 router.get("/stalk-profile/:id", basicMiddleware, StalkProfile);
 router.get("/getUserContent/:id", basicMiddleware, GetUserContent);
+
+// Email verification routes
+router.post("/verify-email", VerifyEmail);
+router.post("/resend-verification-otp", ResendVerificationOTP);
 
 // post req
 router.post("/register-user", RegisterUser);

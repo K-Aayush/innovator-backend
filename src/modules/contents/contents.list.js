@@ -8,10 +8,10 @@ const NodeCache = require("node-cache");
 const mongoose = require("mongoose");
 
 // Optimized cache with shorter TTL for better performance
-const contentCache = new NodeCache({ stdTTL: 60 }); // 1 minute
-const userDataCache = new NodeCache({ stdTTL: 180 }); // 3 minutes
-const engagementCache = new NodeCache({ stdTTL: 120 }); // 2 minutes
-const preloadCache = new NodeCache({ stdTTL: 30 }); // 30 seconds for preload
+const contentCache = new NodeCache({ stdTTL: 60 }); 
+const userDataCache = new NodeCache({ stdTTL: 180 }); 
+const engagementCache = new NodeCache({ stdTTL: 120 }); 
+const preloadCache = new NodeCache({ stdTTL: 30 }); 
 
 // Helper function to shuffle array
 const shuffleArray = (array) => {

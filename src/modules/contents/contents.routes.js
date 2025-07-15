@@ -75,8 +75,8 @@ const viewRateLimiter = rateLimit({
 
 // Very lenient rate limiter for content operations
 const contentOperationLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 1000, // 100 operations per 15 minutes
+  windowMs: 15 * 60 * 1000,
+  max: 1000, 
   message: {
     status: 429,
     data: null,

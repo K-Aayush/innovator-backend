@@ -5,7 +5,7 @@ const gen = new ModelGenerator();
 
 // Progress tracking for individual lessons/videos/notes
 const ProgressItemSchema = new Schema({
-  itemId: gen.required(String), 
+  itemId: gen.required(String),
   itemType: gen.required(String, {
     enum: ["lesson", "video", "note"],
   }),
@@ -16,7 +16,7 @@ const ProgressItemSchema = new Schema({
   completedAt: Date,
   timeSpent: {
     type: Number,
-    default: 0, 
+    default: 0,
   },
   lastAccessedAt: {
     type: Date,
@@ -32,6 +32,8 @@ const EnrollmentSchema = new Schema(
       email: gen.required(String),
       name: gen.required(String),
       picture: String,
+      phone: gen.required(String),
+      location: gen.required(String),
     },
     course: {
       _id: gen.required(String),
@@ -66,7 +68,7 @@ const EnrollmentSchema = new Schema(
       },
       totalTimeSpent: {
         type: Number,
-        default: 0, 
+        default: 0,
       },
       lastAccessedAt: {
         type: Date,
@@ -132,7 +134,7 @@ const EnrollmentSchema = new Schema(
       },
       certificateId: String,
       certificateUrl: String,
-      finalScore: Number, 
+      finalScore: Number,
     },
 
     // Feedback and rating

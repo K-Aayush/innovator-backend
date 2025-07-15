@@ -13,12 +13,11 @@ const basicMiddleware = async (req, res, next) => {
 
   try {
     const authHeader = req.headers?.authorization;
-    // No token at all
     if (!authHeader) {
       throw new Error("Authorization header missing.");
     }
 
-    // Handle non-bearer token (assume Firebase auth fallback)
+    // Handle non-bearer token
     if (!authHeader.startsWith("Bearer ")) {
       return await firebaseMiddleware(req, res, next);
     }
@@ -31,7 +30,6 @@ const basicMiddleware = async (req, res, next) => {
       // Validate the access token
       decoded = jwt.verify(jwtToken, secretKey);
     } catch (err) {
-      // Access token might be expired, try to decode it
       const fallbackDecoded = jwt.decode(jwtToken);
 
       if (!fallbackDecoded || !fallbackDecoded.refreshToken) {
@@ -70,19 +68,34 @@ const basicMiddleware = async (req, res, next) => {
       return res.status(426).json(response);
     }
 
-    // Verified access token — fetch actual user from DB
+    // Verified access token
     const user = await User.findById(decoded._id).lean();
     if (!user) {
       throw new Error("Authenticated user not found in the database.");
     }
 
-    // Attach essential user info to request
+    // Check if user requires email verification
+    if (user.emailVerificationRequired && !user.emailVerified) {
+      const response = GenRes(
+        403,
+        {
+          requiresEmailVerification: true,
+          email: user.email,
+          canResendOTP: true,
+        },
+        { error: "Email verification required" },
+        "Please verify your email to continue"
+      );
+      return res.status(403).json(response);
+    }
+
     req.user = {
       _id: user._id,
       email: user.email,
       phone: user.phone || null,
       role: user.role,
       uid: user.uid || null,
+      emailVerified: user.emailVerified,
     };
 
     if (user.role === "admin") {

@@ -28,7 +28,6 @@ const loginUser = async (req, res) => {
     // Find user by email
     let userData = await User.findOne({ email });
 
-    // Handle Firebase authentication: create new user if not found
     if (!userData && isFirebaseAuth) {
       const newData = {
         email: req.user.email,
@@ -39,7 +38,10 @@ const loginUser = async (req, res) => {
         phone: "Not provided",
         level: "bronze",
         role: "user",
-        isVerified: false,
+        isVerified: true,
+        emailVerified: true,
+        emailVerificationRequired: false,
+        emailVerifiedAt: new Date(),
         signedIn: [new Date()],
         fcmTokens: process.env.DEFAULT_FCM_TOKEN
           ? [process.env.DEFAULT_FCM_TOKEN]
@@ -57,13 +59,32 @@ const loginUser = async (req, res) => {
       }
     }
 
-    // If user still not found (local auth case)
     if (!userData) {
       return res
         .status(404)
         .json(
           GenRes(404, null, { error: "User not registered!" }, "User not found")
         );
+    }
+
+    // Check email verification 
+    if (
+      !isFirebaseAuth &&
+      userData.emailVerificationRequired &&
+      !userData.emailVerified
+    ) {
+      return res.status(403).json(
+        GenRes(
+          403,
+          {
+            requiresEmailVerification: true,
+            email: userData.email,
+            canResendOTP: true,
+          },
+          { error: "Email not verified" },
+          "Please verify your email before logging in"
+        )
+      );
     }
 
     // Check ban status
@@ -88,7 +109,7 @@ const loginUser = async (req, res) => {
       await userData.save();
     }
 
-    // Validate password for local authentication
+    // Validate password
     if (!isFirebaseAuth) {
       if (!userData.password) {
         return res
@@ -120,7 +141,7 @@ const loginUser = async (req, res) => {
       }
     }
 
-    // Update FCM token from environment variable if available
+    // Update FCM token
     if (process.env.DEFAULT_FCM_TOKEN) {
       if (!userData.fcmTokens) {
         userData.fcmTokens = [];

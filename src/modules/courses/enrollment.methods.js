@@ -13,8 +13,21 @@ const path = require("path");
 const EnrollInCourse = async (req, res) => {
   try {
     const { courseId } = req.params;
-    const { paymentInfo } = req.body;
+    const { paymentInfo, phone, location } = req.body;
     const user = req.user;
+
+    if (!phone || !location) {
+      return res
+        .status(400)
+        .json(
+          GenRes(
+            400,
+            null,
+            { error: "Phone and location are required" },
+            "Phone and location are required"
+          )
+        );
+    }
 
     if (!isValidObjectId(courseId)) {
       return res
@@ -81,6 +94,8 @@ const EnrollInCourse = async (req, res) => {
         email: userDetails.email,
         name: userDetails.name,
         picture: userDetails.picture,
+        phone,
+        location,
       },
       course: {
         _id: course._id,

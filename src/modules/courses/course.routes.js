@@ -1,89 +1,48 @@
+const router = require("express").Router();
 const basicMiddleware = require("../../middlewares/basicMiddleware");
 const AdminFiles = require("../../utils/fileProcessor/multer.courses");
 
+// Import methods
 const {
-  // Category Management
-  CreateParentCategory,
-  CreateSubcategory,
+  GetCategories,
+  GetCoursesByCategory,
+  GetCourseDetails,
+} = require("./course.methods");
+
+const {
+  CreateCategory,
   UpdateCategory,
   DeleteCategory,
-
-  // Course Management
   CreateCourse,
   UpdateCourse,
   DeleteCourse,
-
-  // Lesson Management
   AddLesson,
   UpdateLesson,
   DeleteLesson,
+  AddLessonContent,
+  DeleteLessonContent,
+} = require("./admin.methods");
 
-  // Note Management
-  AddNote,
-  UpdateNote,
-  DeleteNote,
+// ==================== PUBLIC ROUTES ====================
 
-  // Video Management
-  AddVideo,
-  UpdateVideo,
-  DeleteVideo,
+// Get all categories
+router.get("/categories", GetCategories);
 
-  // Overview Video Management
-  AddOverviewVideo,
-  UpdateOverviewVideo,
-  DeleteOverviewVideo,
-} = require("./admin.course.management");
+// Get courses by category
+router.get("/categories/:categoryId/courses", GetCoursesByCategory);
 
-// Import display functions
-const {
-  GetParentCategories,
-  GetSubcategories,
-  GetSubcategoryCourses,
-  GetCourseWithLessons,
-  GetNotesByParentCategory,
-  GetCategoryHierarchy,
-} = require("./course.hierarchy.display");
-
-// Import enrollment routes
-const enrollmentRoutes = require("./enrollment.routes");
-
-const router = require("express").Router();
-
-// ==================== PUBLIC DISPLAY ROUTES ====================
-
-// Get parent categories for main navigation
-router.get("/parent-categories", GetParentCategories);
-
-// Get subcategories under a parent (for Courses tab)
-router.get("/parent-categories/:parentId/subcategories", GetSubcategories);
-
-// Get courses under a subcategory
-router.get("/subcategories/:subcategoryId/courses", GetSubcategoryCourses);
-
-// Get course details with lessons (when lesson is selected, filter content)
-router.get("/courses/:courseId/lessons", basicMiddleware, GetCourseWithLessons);
-
-// Get notes by parent category (for Notes tab)
-router.get("/parent-categories/:parentId/notes", GetNotesByParentCategory);
-
-// Get complete category hierarchy
-router.get("/hierarchy", GetCategoryHierarchy);
-
-// Include enrollment routes
-router.use("/", enrollmentRoutes);
+// Get course details with lessons
+router.get("/courses/:courseId", basicMiddleware, GetCourseDetails);
 
 // ==================== ADMIN CATEGORY MANAGEMENT ====================
 
-// Create parent category
-router.post("/admin/parent-categories", basicMiddleware, CreateParentCategory);
+// Create category
+router.post("/admin/categories", basicMiddleware, CreateCategory);
 
-// Create subcategory
-router.post("/admin/subcategories", basicMiddleware, CreateSubcategory);
-
-// Update category (parent or subcategory)
+// Update category
 router.put("/admin/categories/:categoryId", basicMiddleware, UpdateCategory);
 
-// Delete category (parent or subcategory)
+// Delete category
 router.delete("/admin/categories/:categoryId", basicMiddleware, DeleteCategory);
 
 // ==================== ADMIN COURSE MANAGEMENT ====================
@@ -94,7 +53,7 @@ router.post(
   basicMiddleware,
   AdminFiles("public").fields([
     { name: "thumbnail", maxCount: 1 },
-    { name: "bannerImage", maxCount: 1 },
+    { name: "overviewVideo", maxCount: 1 },
   ]),
   CreateCourse
 );
@@ -105,7 +64,7 @@ router.put(
   basicMiddleware,
   AdminFiles("public").fields([
     { name: "thumbnail", maxCount: 1 },
-    { name: "bannerImage", maxCount: 1 },
+    { name: "overviewVideo", maxCount: 1 },
   ]),
   UpdateCourse
 );
@@ -113,22 +72,7 @@ router.put(
 // Delete course
 router.delete("/admin/courses/:courseId", basicMiddleware, DeleteCourse);
 
-// Update overview video
-router.put(
-  "/admin/courses/:courseId/overview-video",
-  basicMiddleware,
-  AdminFiles("public").single("overviewVideo"),
-  UpdateOverviewVideo
-);
-
-// Delete overview video
-router.delete(
-  "/admin/courses/:courseId/overview-video",
-  basicMiddleware,
-  DeleteOverviewVideo
-);
-
-// ==================== ADMIN LESSON MANAGEMENT ====================
+// ==================== LESSON MANAGEMENT ====================
 
 // Add lesson to course
 router.post("/admin/courses/:courseId/lessons", basicMiddleware, AddLesson);
@@ -147,73 +91,23 @@ router.delete(
   DeleteLesson
 );
 
-// ==================== ADMIN NOTE MANAGEMENT ====================
-
-// Add note to course (with optional lesson association)
+// Add content (notes/videos) to lesson
 router.post(
-  "/admin/courses/:courseId/notes",
+  "/admin/courses/:courseId/lessons/:lessonId/content",
   basicMiddleware,
-  AdminFiles("public").single("noteFile"),
-  AddNote
+  AdminFiles("private").any(),
+  AddLessonContent
 );
 
-// Update note
-router.put(
-  "/admin/courses/:courseId/notes/:noteId",
-  basicMiddleware,
-  AdminFiles("public").single("noteFile"),
-  UpdateNote
-);
-
-// Delete note
+// Delete content from lesson
 router.delete(
-  "/admin/courses/:courseId/notes/:noteId",
+  "/admin/courses/:courseId/lessons/:lessonId/content/:contentId",
   basicMiddleware,
-  DeleteNote
+  DeleteLessonContent
 );
-
-// ==================== ADMIN VIDEO MANAGEMENT ====================
-
-// Add video to course (with optional lesson association)
-router.post(
-  "/admin/courses/:courseId/videos",
-  basicMiddleware,
-  AdminFiles("public").single("videoFile"),
-  AddVideo
-);
-
-// Update video
-router.put(
-  "/admin/courses/:courseId/videos/:videoId",
-  basicMiddleware,
-  AdminFiles("public").single("videoFile"),
-  UpdateVideo
-);
-
-// Delete video
-router.delete(
-  "/admin/courses/:courseId/videos/:videoId",
-  basicMiddleware,
-  DeleteVideo
-);
-
 // ==================== FILE UPLOAD ROUTES ====================
 
 // Upload course files (public)
-router.post(
-  "/admin/courses/:courseId/overview-video",
-  basicMiddleware,
-  AdminFiles("public").single("overviewVideo"),
-  AddOverviewVideo
-);
-
-router.put(
-  "/admin/courses/:courseId/overview-video",
-  basicMiddleware,
-  AdminFiles("public").single("overviewVideo"),
-  UpdateOverviewVideo
-);
-
 router.post(
   "/admin/upload-public-files",
   basicMiddleware,

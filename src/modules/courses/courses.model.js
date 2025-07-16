@@ -3,47 +3,15 @@ const ModelGenerator = require("../../utils/database/modelGenerator");
 
 const gen = new ModelGenerator();
 
-// Lesson Schema for course structure
-const LessonSchema = new Schema({
-  title: gen.required(String),
-  description: String,
-  sortOrder: {
-    type: Number,
-    default: 0,
-  },
-  duration: String,
-  isPublished: {
-    type: Boolean,
-    default: true,
-  },
-  metadata: {
-    estimatedTime: Number, 
-    difficulty: {
-      type: String,
-      enum: ["beginner", "intermediate", "advanced"],
-      default: "beginner",
-    },
-    prerequisites: [String],
-  },
-});
-
-// Note Schema with lesson association
+// Note Schema
 const NoteSchema = new Schema({
   title: gen.required(String),
-  content: String,
-  fileUrl: String, 
+  description: String,
+  fileUrl: gen.required(String),
   fileType: {
     type: String,
     enum: ["pdf", "document", "text"],
     default: "pdf",
-  },
-  lessonId: {
-    type: Schema.Types.ObjectId,
-    default: null, 
-  },
-  premium: {
-    type: Boolean,
-    default: false,
   },
   sortOrder: {
     type: Number,
@@ -51,29 +19,24 @@ const NoteSchema = new Schema({
   },
   metadata: {
     fileSize: String,
-    pageCount: Number,
     downloadCount: {
       type: Number,
       default: 0,
     },
+    uploadedAt: {
+      type: Date,
+      default: Date.now,
+    },
   },
 });
 
-// Video Schema with lesson association
+// Video Schema
 const VideoSchema = new Schema({
   title: gen.required(String),
   description: String,
   videoUrl: gen.required(String),
   thumbnail: String,
   duration: String,
-  lessonId: {
-    type: Schema.Types.ObjectId,
-    default: null, 
-  },
-  premium: {
-    type: Boolean,
-    default: false,
-  },
   sortOrder: {
     type: Number,
     default: 0,
@@ -86,6 +49,35 @@ const VideoSchema = new Schema({
       default: 0,
     },
     durationSeconds: Number,
+    uploadedAt: {
+      type: Date,
+      default: Date.now,
+    },
+  },
+});
+
+// Lesson Schema
+const LessonSchema = new Schema({
+  title: gen.required(String),
+  description: String,
+  sortOrder: {
+    type: Number,
+    default: 0,
+  },
+  duration: String,
+  isPublished: {
+    type: Boolean,
+    default: true,
+  },
+  notes: [NoteSchema],
+  videos: [VideoSchema],
+  metadata: {
+    estimatedTime: Number,
+    difficulty: {
+      type: String,
+      enum: ["beginner", "intermediate", "advanced"],
+      default: "beginner",
+    },
   },
 });
 
@@ -93,7 +85,7 @@ const CourseSchema = new Schema(
   {
     title: gen.required(String),
     description: gen.required(String),
-    overview: String, 
+    overview: String,
 
     // Pricing
     price: gen.required({
@@ -103,24 +95,16 @@ const CourseSchema = new Schema(
 
     // Media
     thumbnail: gen.required(String),
-    bannerImage: String,
+    overviewVideo: String,
 
-    // Course structure
+    // Single category like Udemy
+    category: {
+      _id: gen.required(String),
+      name: gen.required(String),
+      slug: String,
+    },
+
     lessons: [LessonSchema],
-    notes: [NoteSchema],
-    videos: [VideoSchema],
-
-    // Category hierarchy
-    parentCategory: {
-      _id: gen.required(String),
-      name: gen.required(String),
-      slug: String,
-    },
-    subcategory: {
-      _id: gen.required(String),
-      name: gen.required(String),
-      slug: String,
-    },
 
     // Course metadata
     instructor: {
@@ -186,10 +170,6 @@ const CourseSchema = new Schema(
         type: Boolean,
         default: true,
       },
-      discussionEnabled: {
-        type: Boolean,
-        default: true,
-      },
     },
   },
   {
@@ -201,7 +181,11 @@ const CourseSchema = new Schema(
 
 // Virtual for total content count
 CourseSchema.virtual("totalContent").get(function () {
-  return (this.notes?.length || 0) + (this.videos?.length || 0);
+  let total = 0;
+  this.lessons?.forEach((lesson) => {
+    total += (lesson.notes?.length || 0) + (lesson.videos?.length || 0);
+  });
+  return total;
 });
 
 // Virtual for lesson count
@@ -209,56 +193,21 @@ CourseSchema.virtual("lessonCount").get(function () {
   return this.lessons?.length || 0;
 });
 
-// Virtual for notes by lesson
-CourseSchema.virtual("notesByLesson").get(function () {
-  const notesByLesson = {};
-
-  // General notes (not associated with any lesson)
-  notesByLesson.general = this.notes?.filter((note) => !note.lessonId) || [];
-
-  // Notes by lesson
-  this.lessons?.forEach((lesson) => {
-    notesByLesson[lesson._id.toString()] =
-      this.notes?.filter(
-        (note) =>
-          note.lessonId && note.lessonId.toString() === lesson._id.toString()
-      ) || [];
-  });
-
-  return notesByLesson;
-});
-
-// Virtual for videos by lesson
-CourseSchema.virtual("videosByLesson").get(function () {
-  const videosByLesson = {};
-
-  // General videos (not associated with any lesson)
-  videosByLesson.general =
-    this.videos?.filter((video) => !video.lessonId) || [];
-
-  // Videos by lesson
-  this.lessons?.forEach((lesson) => {
-    videosByLesson[lesson._id.toString()] =
-      this.videos?.filter(
-        (video) =>
-          video.lessonId && video.lessonId.toString() === lesson._id.toString()
-      ) || [];
-  });
-
-  return videosByLesson;
-});
-
 // Pre-save middleware
 CourseSchema.pre("save", function (next) {
-  // Sort lessons, notes, and videos by sortOrder
+  // Sort lessons by sortOrder
   if (this.lessons) {
     this.lessons.sort((a, b) => a.sortOrder - b.sortOrder);
-  }
-  if (this.notes) {
-    this.notes.sort((a, b) => a.sortOrder - b.sortOrder);
-  }
-  if (this.videos) {
-    this.videos.sort((a, b) => a.sortOrder - b.sortOrder);
+
+    // Sort notes and videos within each lesson
+    this.lessons.forEach((lesson) => {
+      if (lesson.notes) {
+        lesson.notes.sort((a, b) => a.sortOrder - b.sortOrder);
+      }
+      if (lesson.videos) {
+        lesson.videos.sort((a, b) => a.sortOrder - b.sortOrder);
+      }
+    });
   }
 
   next();
@@ -266,13 +215,12 @@ CourseSchema.pre("save", function (next) {
 
 // Index for better performance
 CourseSchema.index({
-  "parentCategory._id": 1,
-  "subcategory._id": 1,
+  "category._id": 1,
   isPublished: 1,
 });
 CourseSchema.index({ title: "text", description: "text" });
-CourseSchema.index({ level: 1, "parentCategory._id": 1 });
+CourseSchema.index({ level: 1, "category._id": 1 });
 CourseSchema.index({ "author._id": 1 });
 
-const Courses = models?.Course || model("Course", CourseSchema);
-module.exports = Courses;
+const Course = models?.Course || model("Course", CourseSchema);
+module.exports = Course;

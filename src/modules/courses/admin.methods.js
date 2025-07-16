@@ -1,6 +1,6 @@
 const Course = require("./courses.model");
 const GenRes = require("../../utils/routers/GenRes");
-const { isValidObjectId } = require("mongoose");
+const { isValidObjectId, Types } = require("mongoose");
 const VideoDurationExtractor = require("../../utils/media/videoDurationExtractor");
 const path = require("path");
 const fs = require("fs");

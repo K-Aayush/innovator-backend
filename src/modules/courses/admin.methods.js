@@ -184,6 +184,7 @@ const CreateCourse = async (req, res) => {
 
     // Create category structure
     const categoryData = {
+      id: new Types.ObjectId().toString(),
       name: data.categoryName || "General",
       description: data.categoryDescription || "",
       icon: data.categoryIcon || "📚",

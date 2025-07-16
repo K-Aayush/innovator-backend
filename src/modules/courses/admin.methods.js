@@ -59,6 +59,7 @@ const CreateCategory = async (req, res) => {
     }
 
     const categoryData = {
+      _id: new Types.ObjectId().toString(),
       name,
       description,
       icon,
@@ -184,7 +185,7 @@ const CreateCourse = async (req, res) => {
 
     // Create category structure
     const categoryData = {
-      id: new Types.ObjectId().toString(),
+      _id: new Types.ObjectId().toString(),
       name: data.categoryName || "General",
       description: data.categoryDescription || "",
       icon: data.categoryIcon || "📚",

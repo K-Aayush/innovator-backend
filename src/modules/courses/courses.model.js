@@ -3,47 +3,15 @@ const ModelGenerator = require("../../utils/database/modelGenerator");
 
 const gen = new ModelGenerator();
 
-// Lesson Schema for course structure
-const LessonSchema = new Schema({
-  title: gen.required(String),
-  description: String,
-  sortOrder: {
-    type: Number,
-    default: 0,
-  },
-  duration: String,
-  isPublished: {
-    type: Boolean,
-    default: true,
-  },
-  metadata: {
-    estimatedTime: Number, 
-    difficulty: {
-      type: String,
-      enum: ["beginner", "intermediate", "advanced"],
-      default: "beginner",
-    },
-    prerequisites: [String],
-  },
-});
-
-// Note Schema with lesson association
+// Note Schema
 const NoteSchema = new Schema({
   title: gen.required(String),
-  content: String,
-  fileUrl: String, 
+  description: String,
+  fileUrl: gen.required(String),
   fileType: {
     type: String,
     enum: ["pdf", "document", "text"],
     default: "pdf",
-  },
-  lessonId: {
-    type: Schema.Types.ObjectId,
-    default: null, 
-  },
-  premium: {
-    type: Boolean,
-    default: false,
   },
   sortOrder: {
     type: Number,
@@ -51,29 +19,24 @@ const NoteSchema = new Schema({
   },
   metadata: {
     fileSize: String,
-    pageCount: Number,
     downloadCount: {
       type: Number,
       default: 0,
     },
+    uploadedAt: {
+      type: Date,
+      default: Date.now,
+    },
   },
 });
 
-// Video Schema with lesson association
+// Video Schema
 const VideoSchema = new Schema({
   title: gen.required(String),
   description: String,
   videoUrl: gen.required(String),
   thumbnail: String,
   duration: String,
-  lessonId: {
-    type: Schema.Types.ObjectId,
-    default: null, 
-  },
-  premium: {
-    type: Boolean,
-    default: false,
-  },
   sortOrder: {
     type: Number,
     default: 0,
@@ -86,6 +49,41 @@ const VideoSchema = new Schema({
       default: 0,
     },
     durationSeconds: Number,
+    width: Number,
+    height: Number,
+    aspectRatio: String,
+    bitrate: Number,
+    codec: String,
+    format: String,
+    uploadedAt: {
+      type: Date,
+      default: Date.now,
+    },
+  },
+});
+
+// Lesson Schema
+const LessonSchema = new Schema({
+  title: gen.required(String),
+  description: String,
+  sortOrder: {
+    type: Number,
+    default: 0,
+  },
+  duration: String,
+  isPublished: {
+    type: Boolean,
+    default: true,
+  },
+  notes: [NoteSchema],
+  videos: [VideoSchema],
+  metadata: {
+    estimatedTime: Number,
+    difficulty: {
+      type: String,
+      enum: ["beginner", "intermediate", "advanced"],
+      default: "beginner",
+    },
   },
 });
 
@@ -93,7 +91,7 @@ const CourseSchema = new Schema(
   {
     title: gen.required(String),
     description: gen.required(String),
-    overview: String, 
+    overview: String,
 
     // Pricing
     price: gen.required({
@@ -103,24 +101,24 @@ const CourseSchema = new Schema(
 
     // Media
     thumbnail: gen.required(String),
-    bannerImage: String,
+    overviewVideo: String,
+    overviewVideoDuration: {
+      type: String,
+      default: "00:00:00",
+    },
 
-    // Course structure
+    // Single category like Udemy
+    category: {
+      _id: gen.required(String),
+      name: gen.required(String),
+      slug: String,
+    },
+
     lessons: [LessonSchema],
-    notes: [NoteSchema],
-    videos: [VideoSchema],
 
-    // Category hierarchy
-    parentCategory: {
-      _id: gen.required(String),
-      name: gen.required(String),
-      slug: String,
-    },
-    subcategory: {
-      _id: gen.required(String),
-      name: gen.required(String),
-      slug: String,
-    },
+    // Course-level content (not lesson-specific)
+    courseVideos: [VideoSchema],
+    coursePDFs: [NoteSchema],
 
     // Course metadata
     instructor: {
@@ -186,10 +184,6 @@ const CourseSchema = new Schema(
         type: Boolean,
         default: true,
       },
-      discussionEnabled: {
-        type: Boolean,
-        default: true,
-      },
     },
   },
   {
@@ -201,7 +195,17 @@ const CourseSchema = new Schema(
 
 // Virtual for total content count
 CourseSchema.virtual("totalContent").get(function () {
-  return (this.notes?.length || 0) + (this.videos?.length || 0);
+  let total = 0;
+
+  // Count lesson content
+  this.lessons?.forEach((lesson) => {
+    total += (lesson.notes?.length || 0) + (lesson.videos?.length || 0);
+  });
+
+  // Count course-level content
+  total += (this.courseVideos?.length || 0) + (this.coursePDFs?.length || 0);
+
+  return total;
 });
 
 // Virtual for lesson count
@@ -209,56 +213,99 @@ CourseSchema.virtual("lessonCount").get(function () {
   return this.lessons?.length || 0;
 });
 
-// Virtual for notes by lesson
-CourseSchema.virtual("notesByLesson").get(function () {
-  const notesByLesson = {};
+// Virtual for total video count
+CourseSchema.virtual("totalVideoCount").get(function () {
+  let count = 0;
 
-  // General notes (not associated with any lesson)
-  notesByLesson.general = this.notes?.filter((note) => !note.lessonId) || [];
-
-  // Notes by lesson
+  // Count lesson videos
   this.lessons?.forEach((lesson) => {
-    notesByLesson[lesson._id.toString()] =
-      this.notes?.filter(
-        (note) =>
-          note.lessonId && note.lessonId.toString() === lesson._id.toString()
-      ) || [];
+    count += lesson.videos?.length || 0;
   });
 
-  return notesByLesson;
+  // Count course videos
+  count += this.courseVideos?.length || 0;
+
+  return count;
 });
 
-// Virtual for videos by lesson
-CourseSchema.virtual("videosByLesson").get(function () {
-  const videosByLesson = {};
+// Virtual for total PDF count
+CourseSchema.virtual("totalPDFCount").get(function () {
+  let count = 0;
 
-  // General videos (not associated with any lesson)
-  videosByLesson.general =
-    this.videos?.filter((video) => !video.lessonId) || [];
-
-  // Videos by lesson
+  // Count lesson notes
   this.lessons?.forEach((lesson) => {
-    videosByLesson[lesson._id.toString()] =
-      this.videos?.filter(
-        (video) =>
-          video.lessonId && video.lessonId.toString() === lesson._id.toString()
-      ) || [];
+    count += lesson.notes?.length || 0;
   });
 
-  return videosByLesson;
+  // Count course PDFs
+  count += this.coursePDFs?.length || 0;
+
+  return count;
+});
+
+// Virtual for total duration
+CourseSchema.virtual("totalDuration").get(function () {
+  let totalSeconds = 0;
+
+  // Add overview video duration
+  if (this.overviewVideoDuration && this.overviewVideoDuration !== "00:00:00") {
+    const parts = this.overviewVideoDuration.split(":");
+    totalSeconds +=
+      parseInt(parts[0]) * 3600 + parseInt(parts[1]) * 60 + parseInt(parts[2]);
+  }
+
+  // Add lesson video durations
+  this.lessons?.forEach((lesson) => {
+    lesson.videos?.forEach((video) => {
+      if (video.metadata?.durationSeconds) {
+        totalSeconds += video.metadata.durationSeconds;
+      }
+    });
+  });
+
+  // Add course video durations
+  this.courseVideos?.forEach((video) => {
+    if (video.metadata?.durationSeconds) {
+      totalSeconds += video.metadata.durationSeconds;
+    }
+  });
+
+  // Convert back to HH:MM:SS format
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  return `${hours
+    .toString()
+    .padStart(
+      2,
+      "0"
+    )}:${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
 });
 
 // Pre-save middleware
 CourseSchema.pre("save", function (next) {
-  // Sort lessons, notes, and videos by sortOrder
+  // Sort lessons by sortOrder
   if (this.lessons) {
     this.lessons.sort((a, b) => a.sortOrder - b.sortOrder);
+
+    // Sort notes and videos within each lesson
+    this.lessons.forEach((lesson) => {
+      if (lesson.notes) {
+        lesson.notes.sort((a, b) => a.sortOrder - b.sortOrder);
+      }
+      if (lesson.videos) {
+        lesson.videos.sort((a, b) => a.sortOrder - b.sortOrder);
+      }
+    });
   }
-  if (this.notes) {
-    this.notes.sort((a, b) => a.sortOrder - b.sortOrder);
+
+  // Sort course-level content
+  if (this.courseVideos) {
+    this.courseVideos.sort((a, b) => a.sortOrder - b.sortOrder);
   }
-  if (this.videos) {
-    this.videos.sort((a, b) => a.sortOrder - b.sortOrder);
+  if (this.coursePDFs) {
+    this.coursePDFs.sort((a, b) => a.sortOrder - b.sortOrder);
   }
 
   next();
@@ -266,13 +313,12 @@ CourseSchema.pre("save", function (next) {
 
 // Index for better performance
 CourseSchema.index({
-  "parentCategory._id": 1,
-  "subcategory._id": 1,
+  "category._id": 1,
   isPublished: 1,
 });
 CourseSchema.index({ title: "text", description: "text" });
-CourseSchema.index({ level: 1, "parentCategory._id": 1 });
+CourseSchema.index({ level: 1, "category._id": 1 });
 CourseSchema.index({ "author._id": 1 });
 
-const Courses = models?.Course || model("Course", CourseSchema);
-module.exports = Courses;
+const Course = models?.Course || model("Course", CourseSchema);
+module.exports = Course;

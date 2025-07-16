@@ -1,5 +1,4 @@
-const Course = require("./course.model");
-const Category = require("./category.model");
+const Course = require("./courses.model");
 const GenRes = require("../../utils/routers/GenRes");
 const { isValidObjectId } = require("mongoose");
 const VideoDurationExtractor = require("../../utils/media/videoDurationExtractor");
@@ -8,7 +7,7 @@ const fs = require("fs");
 
 // ==================== CATEGORY MANAGEMENT ====================
 
-// Create Category
+// Create Category (embedded in course system)
 const CreateCategory = async (req, res) => {
   try {
     if (req.user.role !== "admin") {
@@ -44,7 +43,8 @@ const CreateCategory = async (req, res) => {
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/(^-|-$)/g, "");
 
-    const existingCategory = await Category.findOne({ slug });
+    // Check if category already exists in any course
+    const existingCategory = await Course.findOne({ "category.slug": slug });
     if (existingCategory) {
       return res
         .status(409)
@@ -64,161 +64,48 @@ const CreateCategory = async (req, res) => {
       icon,
       color: color || "#4A90E2",
       slug,
-      createdBy: {
-        _id: req.user._id,
-        email: req.user.email,
-        name: req.user.name || req.user.email,
-      },
     };
-
-    const newCategory = new Category(categoryData);
-    await newCategory.save();
 
     return res
       .status(201)
-      .json(GenRes(201, newCategory, null, "Category created successfully"));
+      .json(
+        GenRes(
+          201,
+          categoryData,
+          null,
+          "Category template created successfully"
+        )
+      );
   } catch (error) {
     console.error("Error creating category:", error);
     return res.status(500).json(GenRes(500, null, error, error?.message));
   }
 };
 
-// Update Category
-const UpdateCategory = async (req, res) => {
+// Get all categories (from existing courses)
+const GetCategories = async (req, res) => {
   try {
-    if (req.user.role !== "admin") {
-      return res
-        .status(403)
-        .json(
-          GenRes(
-            403,
-            null,
-            { error: "Not authorized" },
-            "Only admins can update categories"
-          )
-        );
-    }
-
-    const { categoryId } = req.params;
-    const updateData = req.body;
-
-    if (!isValidObjectId(categoryId)) {
-      return res
-        .status(400)
-        .json(
-          GenRes(
-            400,
-            null,
-            { error: "Invalid category ID" },
-            "Invalid category ID"
-          )
-        );
-    }
-
-    delete updateData._id;
-    delete updateData.createdBy;
-    delete updateData.metadata;
-
-    const updatedCategory = await Category.findByIdAndUpdate(
-      categoryId,
-      { $set: updateData },
-      { new: true, runValidators: true }
-    );
-
-    if (!updatedCategory) {
-      return res
-        .status(404)
-        .json(
-          GenRes(
-            404,
-            null,
-            { error: "Category not found" },
-            "Category not found"
-          )
-        );
-    }
+    const categories = await Course.aggregate([
+      {
+        $group: {
+          _id: "$category.slug",
+          name: { $first: "$category.name" },
+          description: { $first: "$category.description" },
+          icon: { $first: "$category.icon" },
+          color: { $first: "$category.color" },
+          slug: { $first: "$category.slug" },
+          courseCount: { $sum: 1 },
+          totalEnrollments: { $sum: "$enrollmentCount" },
+        },
+      },
+      { $sort: { name: 1 } },
+    ]);
 
     return res
       .status(200)
-      .json(
-        GenRes(200, updatedCategory, null, "Category updated successfully")
-      );
+      .json(GenRes(200, categories, null, "Categories retrieved successfully"));
   } catch (error) {
-    console.error("Error updating category:", error);
-    return res.status(500).json(GenRes(500, null, error, error?.message));
-  }
-};
-
-// Delete Category
-const DeleteCategory = async (req, res) => {
-  try {
-    if (req.user.role !== "admin") {
-      return res
-        .status(403)
-        .json(
-          GenRes(
-            403,
-            null,
-            { error: "Not authorized" },
-            "Only admins can delete categories"
-          )
-        );
-    }
-
-    const { categoryId } = req.params;
-
-    if (!isValidObjectId(categoryId)) {
-      return res
-        .status(400)
-        .json(
-          GenRes(
-            400,
-            null,
-            { error: "Invalid category ID" },
-            "Invalid category ID"
-          )
-        );
-    }
-
-    const category = await Category.findById(categoryId);
-    if (!category) {
-      return res
-        .status(404)
-        .json(
-          GenRes(
-            404,
-            null,
-            { error: "Category not found" },
-            "Category not found"
-          )
-        );
-    }
-
-    // Check if category has courses
-    const courseCount = await Course.countDocuments({
-      "category._id": categoryId,
-    });
-
-    if (courseCount > 0) {
-      return res
-        .status(400)
-        .json(
-          GenRes(
-            400,
-            null,
-            { error: "Category has courses" },
-            "Cannot delete category that contains courses"
-          )
-        );
-    }
-
-    await Category.findByIdAndDelete(categoryId);
-
-    return res
-      .status(200)
-      .json(GenRes(200, null, null, "Category deleted successfully"));
-  } catch (error) {
-    console.error("Error deleting category:", error);
+    console.error("Error getting categories:", error);
     return res.status(500).json(GenRes(500, null, error, error?.message));
   }
 };
@@ -246,16 +133,16 @@ const CreateCourse = async (req, res) => {
     const thumbnailFile = files.find((f) => f.includes("thumbnail"));
     const overviewVideoFile = files.find((f) => f.includes("overviewVideo"));
 
-    // Validate required category
-    if (!data.categoryId || !isValidObjectId(data.categoryId)) {
+    // Validate required fields
+    if (!data.title || !data.description) {
       return res
         .status(400)
         .json(
           GenRes(
             400,
             null,
-            { error: "Valid category ID is required" },
-            "Please select a valid category"
+            { error: "Title and description are required" },
+            "Please provide course title and description"
           )
         );
     }
@@ -273,30 +160,46 @@ const CreateCourse = async (req, res) => {
         );
     }
 
-    // Validate category exists
-    const category = await Category.findById(data.categoryId);
-    if (!category) {
-      return res
-        .status(404)
-        .json(
-          GenRes(
-            404,
-            null,
-            { error: "Category not found" },
-            "Selected category not found"
-          )
+    // Process overview video duration if provided
+    let overviewVideoDuration = "00:00:00";
+    if (overviewVideoFile) {
+      try {
+        const videoPath = path.join(
+          process.cwd(),
+          overviewVideoFile.substring(1)
         );
+        if (fs.existsSync(videoPath)) {
+          const videoInfo = await VideoDurationExtractor.extractVideoInfo(
+            videoPath
+          );
+          overviewVideoDuration = videoInfo.duration;
+          console.log(
+            `Overview video duration extracted: ${overviewVideoDuration}`
+          );
+        }
+      } catch (error) {
+        console.error("Error extracting overview video duration:", error);
+      }
     }
+
+    // Create category structure
+    const categoryData = {
+      name: data.categoryName || "General",
+      description: data.categoryDescription || "",
+      icon: data.categoryIcon || "📚",
+      color: data.categoryColor || "#4A90E2",
+      slug: (data.categoryName || "general")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/(^-|-$)/g, ""),
+    };
 
     const courseData = {
       ...data,
       thumbnail: thumbnailFile,
       overviewVideo: overviewVideoFile || data.overviewVideo,
-      category: {
-        _id: category._id.toString(),
-        name: category.name,
-        slug: category.slug,
-      },
+      overviewVideoDuration,
+      category: categoryData,
       author: {
         email: req.user.email,
         phone: req.user.phone || "Not provided",
@@ -311,14 +214,8 @@ const CreateCourse = async (req, res) => {
       },
     };
 
-    // Remove processed ID from courseData
-    delete courseData.categoryId;
-
     const newCourse = new Course(courseData);
     await newCourse.save();
-
-    // Update category metadata
-    await updateCategoryMetadata(category._id);
 
     return res
       .status(200)
@@ -402,6 +299,46 @@ const UpdateCourse = async (req, res) => {
         }
       }
       data.overviewVideo = overviewVideoFile;
+
+      // Extract new overview video duration
+      try {
+        const videoPath = path.join(
+          process.cwd(),
+          overviewVideoFile.substring(1)
+        );
+        if (fs.existsSync(videoPath)) {
+          const videoInfo = await VideoDurationExtractor.extractVideoInfo(
+            videoPath
+          );
+          data.overviewVideoDuration = videoInfo.duration;
+          console.log(
+            `Updated overview video duration: ${data.overviewVideoDuration}`
+          );
+        }
+      } catch (error) {
+        console.error(
+          "Error extracting updated overview video duration:",
+          error
+        );
+      }
+    }
+
+    // Update category if provided
+    if (data.categoryName) {
+      data.category = {
+        name: data.categoryName,
+        description: data.categoryDescription || course.category.description,
+        icon: data.categoryIcon || course.category.icon,
+        color: data.categoryColor || course.category.color,
+        slug: data.categoryName
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/(^-|-$)/g, ""),
+      };
+      delete data.categoryName;
+      delete data.categoryDescription;
+      delete data.categoryIcon;
+      delete data.categoryColor;
     }
 
     const updatedCourse = await Course.findByIdAndUpdate(
@@ -454,8 +391,6 @@ const DeleteCourse = async (req, res) => {
         );
     }
 
-    const categoryId = course.category._id;
-
     // Delete associated files
     const allFiles = [course.thumbnail, course.overviewVideo].filter(Boolean);
 
@@ -468,6 +403,16 @@ const DeleteCourse = async (req, res) => {
         if (video.videoUrl) allFiles.push(video.videoUrl);
         if (video.thumbnail) allFiles.push(video.thumbnail);
       });
+    });
+
+    // Add course-level files
+    course.courseVideos?.forEach((video) => {
+      if (video.videoUrl) allFiles.push(video.videoUrl);
+      if (video.thumbnail) allFiles.push(video.thumbnail);
+    });
+
+    course.coursePDFs?.forEach((pdf) => {
+      if (pdf.fileUrl) allFiles.push(pdf.fileUrl);
     });
 
     if (allFiles.length > 0) {
@@ -488,9 +433,6 @@ const DeleteCourse = async (req, res) => {
 
     await Course.findByIdAndDelete(courseId);
 
-    // Update category metadata
-    await updateCategoryMetadata(categoryId);
-
     return res
       .status(200)
       .json(GenRes(200, null, null, "Course deleted successfully!"));
@@ -500,53 +442,6 @@ const DeleteCourse = async (req, res) => {
   }
 };
 
-// Helper function to update category metadata
-async function updateCategoryMetadata(categoryId) {
-  try {
-    const courses = await Course.find({
-      "category._id": categoryId,
-    });
-
-    let totalCourses = courses.length;
-    let totalLessons = 0;
-    let totalNotes = 0;
-    let totalVideos = 0;
-
-    courses.forEach((course) => {
-      totalLessons += course.lessons?.length || 0;
-      course.lessons?.forEach((lesson) => {
-        totalNotes += lesson.notes?.length || 0;
-        totalVideos += lesson.videos?.length || 0;
-      });
-    });
-
-    await Category.findByIdAndUpdate(categoryId, {
-      $set: {
-        "metadata.totalCourses": totalCourses,
-        "metadata.totalLessons": totalLessons,
-        "metadata.totalNotes": totalNotes,
-        "metadata.totalVideos": totalVideos,
-        "metadata.lastUpdated": new Date(),
-      },
-    });
-  } catch (error) {
-    console.error("Error updating category metadata:", error);
-  }
-}
-
-module.exports = {
-  CreateCategory,
-  UpdateCategory,
-  DeleteCategory,
-  CreateCourse,
-  UpdateCourse,
-  DeleteCourse,
-  AddLesson,
-  UpdateLesson,
-  DeleteLesson,
-  AddLessonContent,
-  DeleteLessonContent,
-};
 // ==================== LESSON MANAGEMENT ====================
 
 // Add lesson to course
@@ -765,6 +660,8 @@ const DeleteLesson = async (req, res) => {
   }
 };
 
+// ==================== LESSON CONTENT MANAGEMENT ====================
+
 // Add content (notes/videos) to lesson
 const AddLessonContent = async (req, res) => {
   try {
@@ -877,7 +774,7 @@ const AddLessonContent = async (req, res) => {
           )
         );
     } else if (contentType === "video") {
-      // Add multiple video files
+      // Add multiple video files with duration extraction
       const videoFiles = files.filter((file) =>
         /\.(mp4|mov|avi|webm|mkv)$/i.test(file)
       );
@@ -899,24 +796,56 @@ const AddLessonContent = async (req, res) => {
       }
 
       const addedVideos = [];
-      videoFiles.forEach((file, index) => {
+
+      for (let index = 0; index < videoFiles.length; index++) {
+        const file = videoFiles[index];
+        let duration = "00:00:00";
+        let metadata = {
+          quality: "HD",
+          fileSize: "Unknown",
+          viewCount: 0,
+          durationSeconds: 0,
+        };
+
+        // Extract video duration and metadata
+        try {
+          const videoPath = path.join(process.cwd(), file.substring(1));
+          if (fs.existsSync(videoPath)) {
+            const videoInfo = await VideoDurationExtractor.extractVideoInfo(
+              videoPath
+            );
+            duration = videoInfo.duration;
+            metadata = {
+              ...metadata,
+              durationSeconds: videoInfo.durationSeconds,
+              quality: videoInfo.quality,
+              fileSize: videoInfo.fileSize,
+              width: videoInfo.width,
+              height: videoInfo.height,
+              aspectRatio: videoInfo.aspectRatio,
+              bitrate: videoInfo.bitrate,
+              codec: videoInfo.codec,
+              format: videoInfo.format,
+            };
+            console.log(`Video duration extracted for ${file}: ${duration}`);
+          }
+        } catch (error) {
+          console.error(`Error extracting video metadata for ${file}:`, error);
+        }
+
         const newVideo = {
           title: title || `Video ${lesson.videos.length + index + 1}`,
           description: description || "",
           videoUrl: file,
           thumbnail: thumbnailFiles[index] || thumbnailFiles[0] || "",
-          duration: "00:00:00",
+          duration,
           sortOrder: sortOrder || lesson.videos.length + index,
-          metadata: {
-            quality: "HD",
-            fileSize: "Unknown",
-            viewCount: 0,
-            durationSeconds: 0,
-          },
+          metadata,
         };
+
         lesson.videos.push(newVideo);
         addedVideos.push(newVideo);
-      });
+      }
 
       await course.save();
       return res
@@ -932,6 +861,199 @@ const AddLessonContent = async (req, res) => {
     }
   } catch (error) {
     console.error("Error adding lesson content:", error);
+    return res.status(500).json(GenRes(500, null, error, error?.message));
+  }
+};
+
+// Update lesson content (video or note)
+const UpdateLessonContent = async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res
+        .status(403)
+        .json(
+          GenRes(
+            403,
+            null,
+            { error: "Not authorized" },
+            "Only admins can update lesson content"
+          )
+        );
+    }
+
+    const { courseId, lessonId, contentId } = req.params;
+    const { contentType, title, description } = req.body;
+    const files = req.file_locations || [];
+
+    if (
+      !isValidObjectId(courseId) ||
+      !isValidObjectId(lessonId) ||
+      !isValidObjectId(contentId)
+    ) {
+      return res
+        .status(400)
+        .json(
+          GenRes(400, null, { error: "Invalid IDs" }, "Invalid IDs provided")
+        );
+    }
+
+    if (!contentType || !["note", "video"].includes(contentType)) {
+      return res
+        .status(400)
+        .json(
+          GenRes(
+            400,
+            null,
+            { error: "Invalid content type" },
+            "Content type must be 'note' or 'video'"
+          )
+        );
+    }
+
+    const course = await Course.findById(courseId);
+    if (!course) {
+      return res
+        .status(404)
+        .json(
+          GenRes(404, null, { error: "Course not found" }, "Course not found")
+        );
+    }
+
+    const lesson = course.lessons.id(lessonId);
+    if (!lesson) {
+      return res
+        .status(404)
+        .json(
+          GenRes(404, null, { error: "Lesson not found" }, "Lesson not found")
+        );
+    }
+
+    let contentItem;
+    if (contentType === "note") {
+      contentItem = lesson.notes.id(contentId);
+      if (!contentItem) {
+        return res
+          .status(404)
+          .json(
+            GenRes(404, null, { error: "Note not found" }, "Note not found")
+          );
+      }
+
+      // Update note properties
+      if (title) contentItem.title = title;
+      if (description) contentItem.description = description;
+
+      // Update file if provided
+      const noteFile = files.find((file) =>
+        /\.(pdf|doc|docx|txt)$/i.test(file)
+      );
+      if (noteFile) {
+        // Delete old file
+        if (contentItem.fileUrl) {
+          try {
+            const oldPath = path.join(
+              process.cwd(),
+              contentItem.fileUrl.slice(1)
+            );
+            fs.unlinkSync(oldPath);
+          } catch (error) {
+            console.log(`Failed to delete old note file: ${error?.message}`);
+          }
+        }
+        contentItem.fileUrl = noteFile;
+        contentItem.fileType = noteFile.endsWith(".pdf") ? "pdf" : "document";
+      }
+    } else if (contentType === "video") {
+      contentItem = lesson.videos.id(contentId);
+      if (!contentItem) {
+        return res
+          .status(404)
+          .json(
+            GenRes(404, null, { error: "Video not found" }, "Video not found")
+          );
+      }
+
+      // Update video properties
+      if (title) contentItem.title = title;
+      if (description) contentItem.description = description;
+
+      // Update video file if provided
+      const videoFile = files.find((file) =>
+        /\.(mp4|mov|avi|webm|mkv)$/i.test(file)
+      );
+      const thumbnailFile = files.find((file) =>
+        /\.(jpg|jpeg|png|gif)$/i.test(file)
+      );
+
+      if (videoFile) {
+        // Delete old video file
+        if (contentItem.videoUrl) {
+          try {
+            const oldPath = path.join(
+              process.cwd(),
+              contentItem.videoUrl.slice(1)
+            );
+            fs.unlinkSync(oldPath);
+          } catch (error) {
+            console.log(`Failed to delete old video file: ${error?.message}`);
+          }
+        }
+
+        contentItem.videoUrl = videoFile;
+
+        // Extract new video duration and metadata
+        try {
+          const videoPath = path.join(process.cwd(), videoFile.substring(1));
+          if (fs.existsSync(videoPath)) {
+            const videoInfo = await VideoDurationExtractor.extractVideoInfo(
+              videoPath
+            );
+            contentItem.duration = videoInfo.duration;
+            contentItem.metadata = {
+              ...contentItem.metadata,
+              durationSeconds: videoInfo.durationSeconds,
+              quality: videoInfo.quality,
+              fileSize: videoInfo.fileSize,
+              width: videoInfo.width,
+              height: videoInfo.height,
+              aspectRatio: videoInfo.aspectRatio,
+              bitrate: videoInfo.bitrate,
+              codec: videoInfo.codec,
+              format: videoInfo.format,
+            };
+            console.log(`Updated video duration: ${contentItem.duration}`);
+          }
+        } catch (error) {
+          console.error(`Error extracting updated video metadata:`, error);
+        }
+      }
+
+      if (thumbnailFile) {
+        // Delete old thumbnail
+        if (contentItem.thumbnail) {
+          try {
+            const oldPath = path.join(
+              process.cwd(),
+              contentItem.thumbnail.slice(1)
+            );
+            fs.unlinkSync(oldPath);
+          } catch (error) {
+            console.log(`Failed to delete old thumbnail: ${error?.message}`);
+          }
+        }
+        contentItem.thumbnail = thumbnailFile;
+      }
+    }
+
+    await course.save();
+
+    return res
+      .status(200)
+      .json(
+        GenRes(200, contentItem, null, `${contentType} updated successfully`)
+      );
+  } catch (error) {
+    console.error("Error updating lesson content:", error);
     return res.status(500).json(GenRes(500, null, error, error?.message));
   }
 };
@@ -1056,4 +1178,252 @@ const DeleteLessonContent = async (req, res) => {
     console.error("Error deleting lesson content:", error);
     return res.status(500).json(GenRes(500, null, error, error?.message));
   }
+};
+
+// ==================== COURSE CONTENT MANAGEMENT (Direct to Course) ====================
+
+// Add video directly to course (not lesson-specific)
+const AddCourseVideo = async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res
+        .status(403)
+        .json(
+          GenRes(
+            403,
+            null,
+            { error: "Not authorized" },
+            "Only admins can add course videos"
+          )
+        );
+    }
+
+    const { courseId } = req.params;
+    const { title, description, sortOrder } = req.body;
+    const files = req.file_locations || [];
+
+    if (!isValidObjectId(courseId)) {
+      return res
+        .status(400)
+        .json(
+          GenRes(400, null, { error: "Invalid course ID" }, "Invalid course ID")
+        );
+    }
+
+    const videoFiles = files.filter((file) =>
+      /\.(mp4|mov|avi|webm|mkv)$/i.test(file)
+    );
+    const thumbnailFiles = files.filter((file) =>
+      /\.(jpg|jpeg|png|gif)$/i.test(file)
+    );
+
+    if (videoFiles.length === 0) {
+      return res
+        .status(400)
+        .json(
+          GenRes(
+            400,
+            null,
+            { error: "No video files found" },
+            "Please upload video files"
+          )
+        );
+    }
+
+    const course = await Course.findById(courseId);
+    if (!course) {
+      return res
+        .status(404)
+        .json(
+          GenRes(404, null, { error: "Course not found" }, "Course not found")
+        );
+    }
+
+    // Initialize course videos array if it doesn't exist
+    if (!course.courseVideos) {
+      course.courseVideos = [];
+    }
+
+    const addedVideos = [];
+
+    for (let index = 0; index < videoFiles.length; index++) {
+      const file = videoFiles[index];
+      let duration = "00:00:00";
+      let metadata = {
+        quality: "HD",
+        fileSize: "Unknown",
+        viewCount: 0,
+        durationSeconds: 0,
+      };
+
+      // Extract video duration and metadata
+      try {
+        const videoPath = path.join(process.cwd(), file.substring(1));
+        if (fs.existsSync(videoPath)) {
+          const videoInfo = await VideoDurationExtractor.extractVideoInfo(
+            videoPath
+          );
+          duration = videoInfo.duration;
+          metadata = {
+            ...metadata,
+            durationSeconds: videoInfo.durationSeconds,
+            quality: videoInfo.quality,
+            fileSize: videoInfo.fileSize,
+            width: videoInfo.width,
+            height: videoInfo.height,
+            aspectRatio: videoInfo.aspectRatio,
+            bitrate: videoInfo.bitrate,
+            codec: videoInfo.codec,
+            format: videoInfo.format,
+          };
+          console.log(
+            `Course video duration extracted for ${file}: ${duration}`
+          );
+        }
+      } catch (error) {
+        console.error(
+          `Error extracting course video metadata for ${file}:`,
+          error
+        );
+      }
+
+      const newVideo = {
+        title:
+          title || `Course Video ${course.courseVideos.length + index + 1}`,
+        description: description || "",
+        videoUrl: file,
+        thumbnail: thumbnailFiles[index] || thumbnailFiles[0] || "",
+        duration,
+        sortOrder: sortOrder || course.courseVideos.length + index,
+        metadata,
+      };
+
+      course.courseVideos.push(newVideo);
+      addedVideos.push(newVideo);
+    }
+
+    await course.save();
+    return res
+      .status(201)
+      .json(
+        GenRes(
+          201,
+          addedVideos,
+          null,
+          `${addedVideos.length} course video(s) added successfully`
+        )
+      );
+  } catch (error) {
+    console.error("Error adding course video:", error);
+    return res.status(500).json(GenRes(500, null, error, error?.message));
+  }
+};
+
+// Add PDF directly to course (not lesson-specific)
+const AddCoursePDF = async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res
+        .status(403)
+        .json(
+          GenRes(
+            403,
+            null,
+            { error: "Not authorized" },
+            "Only admins can add course PDFs"
+          )
+        );
+    }
+
+    const { courseId } = req.params;
+    const { title, description, sortOrder } = req.body;
+    const files = req.file_locations || [];
+
+    if (!isValidObjectId(courseId)) {
+      return res
+        .status(400)
+        .json(
+          GenRes(400, null, { error: "Invalid course ID" }, "Invalid course ID")
+        );
+    }
+
+    const pdfFiles = files.filter((file) =>
+      /\.(pdf|doc|docx|txt)$/i.test(file)
+    );
+
+    if (pdfFiles.length === 0) {
+      return res
+        .status(400)
+        .json(
+          GenRes(
+            400,
+            null,
+            { error: "No PDF files found" },
+            "Please upload PDF or document files"
+          )
+        );
+    }
+
+    const course = await Course.findById(courseId);
+    if (!course) {
+      return res
+        .status(404)
+        .json(
+          GenRes(404, null, { error: "Course not found" }, "Course not found")
+        );
+    }
+
+    // Initialize course PDFs array if it doesn't exist
+    if (!course.coursePDFs) {
+      course.coursePDFs = [];
+    }
+
+    const addedPDFs = [];
+    pdfFiles.forEach((file, index) => {
+      const newPDF = {
+        title: title || `Course PDF ${course.coursePDFs.length + index + 1}`,
+        description: description || "",
+        fileUrl: file,
+        fileType: file.endsWith(".pdf") ? "pdf" : "document",
+        sortOrder: sortOrder || course.coursePDFs.length + index,
+        metadata: {
+          fileSize: "Unknown",
+          downloadCount: 0,
+        },
+      };
+      course.coursePDFs.push(newPDF);
+      addedPDFs.push(newPDF);
+    });
+
+    await course.save();
+    return res
+      .status(201)
+      .json(
+        GenRes(
+          201,
+          addedPDFs,
+          null,
+          `${addedPDFs.length} course PDF(s) added successfully`
+        )
+      );
+  } catch (error) {
+    console.error("Error adding course PDF:", error);
+    return res.status(500).json(GenRes(500, null, error, error?.message));
+  }
+};
+
+module.exports = {
+  CreateCategory,
+  GetCategories,
+  CreateCourse,
+  UpdateCourse,
+  DeleteCourse,
+  AddLesson,
+  UpdateLesson,
+  DeleteLesson,
+  AddLessonContent,
+  UpdateLessonContent,
+  DeleteLessonContent,
+  AddCourseVideo,
+  AddCoursePDF,
 };

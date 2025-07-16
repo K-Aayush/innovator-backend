@@ -11,8 +11,7 @@ const {
 
 const {
   CreateCategory,
-  UpdateCategory,
-  DeleteCategory,
+  GetCategories: GetAdminCategories,
   CreateCourse,
   UpdateCourse,
   DeleteCourse,
@@ -20,7 +19,10 @@ const {
   UpdateLesson,
   DeleteLesson,
   AddLessonContent,
+  UpdateLessonContent,
   DeleteLessonContent,
+  AddCourseVideo,
+  AddCoursePDF,
 } = require("./admin.methods");
 
 // ==================== PUBLIC ROUTES ====================
@@ -28,22 +30,21 @@ const {
 // Get all categories
 router.get("/categories", GetCategories);
 
-// Get courses by category
-router.get("/categories/:categoryId/courses", GetCoursesByCategory);
+// Get courses by category slug
+router.get("/categories/:categorySlug/courses", GetCoursesByCategory);
 
 // Get course details with lessons
+// Without lessonId: shows entire course with all content
+// With lessonId: shows only that lesson's videos/notes
 router.get("/courses/:courseId", basicMiddleware, GetCourseDetails);
 
 // ==================== ADMIN CATEGORY MANAGEMENT ====================
 
-// Create category
+// Create category template
 router.post("/admin/categories", basicMiddleware, CreateCategory);
 
-// Update category
-router.put("/admin/categories/:categoryId", basicMiddleware, UpdateCategory);
-
-// Delete category
-router.delete("/admin/categories/:categoryId", basicMiddleware, DeleteCategory);
+// Get categories for admin
+router.get("/admin/categories", basicMiddleware, GetAdminCategories);
 
 // ==================== ADMIN COURSE MANAGEMENT ====================
 
@@ -99,12 +100,42 @@ router.post(
   AddLessonContent
 );
 
+// Update lesson content (video or note)
+router.put(
+  "/admin/courses/:courseId/lessons/:lessonId/content/:contentId",
+  basicMiddleware,
+  AdminFiles("private").any(),
+  UpdateLessonContent
+);
+
 // Delete content from lesson
 router.delete(
   "/admin/courses/:courseId/lessons/:lessonId/content/:contentId",
   basicMiddleware,
   DeleteLessonContent
 );
+
+// ==================== COURSE CONTENT MANAGEMENT (Not lesson-specific) ====================
+
+// Add video directly to course (not lesson-specific)
+router.post(
+  "/admin/courses/:courseId/videos",
+  basicMiddleware,
+  AdminFiles("private").fields([
+    { name: "video", maxCount: 5 },
+    { name: "thumbnail", maxCount: 5 },
+  ]),
+  AddCourseVideo
+);
+
+// Add PDF directly to course (not lesson-specific)
+router.post(
+  "/admin/courses/:courseId/pdfs",
+  basicMiddleware,
+  AdminFiles("private").any(),
+  AddCoursePDF
+);
+
 // ==================== FILE UPLOAD ROUTES ====================
 
 // Upload course files (public)

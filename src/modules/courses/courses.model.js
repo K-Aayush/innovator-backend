@@ -49,6 +49,12 @@ const VideoSchema = new Schema({
       default: 0,
     },
     durationSeconds: Number,
+    width: Number,
+    height: Number,
+    aspectRatio: String,
+    bitrate: Number,
+    codec: String,
+    format: String,
     uploadedAt: {
       type: Date,
       default: Date.now,
@@ -96,6 +102,10 @@ const CourseSchema = new Schema(
     // Media
     thumbnail: gen.required(String),
     overviewVideo: String,
+    overviewVideoDuration: {
+      type: String,
+      default: "00:00:00",
+    },
 
     // Single category like Udemy
     category: {
@@ -105,6 +115,10 @@ const CourseSchema = new Schema(
     },
 
     lessons: [LessonSchema],
+
+    // Course-level content (not lesson-specific)
+    courseVideos: [VideoSchema],
+    coursePDFs: [NoteSchema],
 
     // Course metadata
     instructor: {
@@ -182,15 +196,91 @@ const CourseSchema = new Schema(
 // Virtual for total content count
 CourseSchema.virtual("totalContent").get(function () {
   let total = 0;
+
+  // Count lesson content
   this.lessons?.forEach((lesson) => {
     total += (lesson.notes?.length || 0) + (lesson.videos?.length || 0);
   });
+
+  // Count course-level content
+  total += (this.courseVideos?.length || 0) + (this.coursePDFs?.length || 0);
+
   return total;
 });
 
 // Virtual for lesson count
 CourseSchema.virtual("lessonCount").get(function () {
   return this.lessons?.length || 0;
+});
+
+// Virtual for total video count
+CourseSchema.virtual("totalVideoCount").get(function () {
+  let count = 0;
+
+  // Count lesson videos
+  this.lessons?.forEach((lesson) => {
+    count += lesson.videos?.length || 0;
+  });
+
+  // Count course videos
+  count += this.courseVideos?.length || 0;
+
+  return count;
+});
+
+// Virtual for total PDF count
+CourseSchema.virtual("totalPDFCount").get(function () {
+  let count = 0;
+
+  // Count lesson notes
+  this.lessons?.forEach((lesson) => {
+    count += lesson.notes?.length || 0;
+  });
+
+  // Count course PDFs
+  count += this.coursePDFs?.length || 0;
+
+  return count;
+});
+
+// Virtual for total duration
+CourseSchema.virtual("totalDuration").get(function () {
+  let totalSeconds = 0;
+
+  // Add overview video duration
+  if (this.overviewVideoDuration && this.overviewVideoDuration !== "00:00:00") {
+    const parts = this.overviewVideoDuration.split(":");
+    totalSeconds +=
+      parseInt(parts[0]) * 3600 + parseInt(parts[1]) * 60 + parseInt(parts[2]);
+  }
+
+  // Add lesson video durations
+  this.lessons?.forEach((lesson) => {
+    lesson.videos?.forEach((video) => {
+      if (video.metadata?.durationSeconds) {
+        totalSeconds += video.metadata.durationSeconds;
+      }
+    });
+  });
+
+  // Add course video durations
+  this.courseVideos?.forEach((video) => {
+    if (video.metadata?.durationSeconds) {
+      totalSeconds += video.metadata.durationSeconds;
+    }
+  });
+
+  // Convert back to HH:MM:SS format
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  return `${hours
+    .toString()
+    .padStart(
+      2,
+      "0"
+    )}:${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
 });
 
 // Pre-save middleware
@@ -208,6 +298,14 @@ CourseSchema.pre("save", function (next) {
         lesson.videos.sort((a, b) => a.sortOrder - b.sortOrder);
       }
     });
+  }
+
+  // Sort course-level content
+  if (this.courseVideos) {
+    this.courseVideos.sort((a, b) => a.sortOrder - b.sortOrder);
+  }
+  if (this.coursePDFs) {
+    this.coursePDFs.sort((a, b) => a.sortOrder - b.sortOrder);
   }
 
   next();

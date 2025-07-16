@@ -1,47 +1,95 @@
-const Course = require("./course.model");
-const Category = require("./category.model");
+const Course = require("./courses.model");
 const GenRes = require("../../utils/routers/GenRes");
 const { isValidObjectId } = require("mongoose");
 
-// Get all categories
+// Get all categories (from existing courses)
 const GetCategories = async (req, res) => {
   try {
-    const categories = await Category.find({ isActive: true })
-      .sort({ sortOrder: 1, name: 1 })
-      .lean();
+    const categories = await Course.aggregate([
+      {
+        $group: {
+          _id: "$category.slug",
+          name: { $first: "$category.name" },
+          description: { $first: "$category.description" },
+          icon: { $first: "$category.icon" },
+          color: { $first: "$category.color" },
+          slug: { $first: "$category.slug" },
+          courseCount: { $sum: 1 },
+          totalEnrollments: { $sum: "$enrollmentCount" },
+        },
+      },
+      { $sort: { name: 1 } },
+    ]);
 
     // Enrich with course statistics
     const enrichedCategories = await Promise.all(
       categories.map(async (category) => {
-        const [courseCount, totalLessons, totalNotes, totalVideos] =
-          await Promise.all([
-            Course.countDocuments({
-              "category._id": category._id.toString(),
-              isPublished: true,
-            }),
-            Course.aggregate([
-              { $match: { "category._id": category._id.toString() } },
-              { $project: { lessonsCount: { $size: "$lessons" } } },
-              { $group: { _id: null, total: { $sum: "$lessonsCount" } } },
-            ]),
-            Course.aggregate([
-              { $match: { "category._id": category._id.toString() } },
-              { $unwind: "$lessons" },
-              { $project: { notesCount: { $size: "$lessons.notes" } } },
-              { $group: { _id: null, total: { $sum: "$notesCount" } } },
-            ]),
-            Course.aggregate([
-              { $match: { "category._id": category._id.toString() } },
-              { $unwind: "$lessons" },
-              { $project: { videosCount: { $size: "$lessons.videos" } } },
-              { $group: { _id: null, total: { $sum: "$videosCount" } } },
-            ]),
-          ]);
+        const [totalLessons, totalNotes, totalVideos] = await Promise.all([
+          Course.aggregate([
+            { $match: { "category.slug": category.slug } },
+            { $project: { lessonsCount: { $size: "$lessons" } } },
+            { $group: { _id: null, total: { $sum: "$lessonsCount" } } },
+          ]),
+          Course.aggregate([
+            { $match: { "category.slug": category.slug } },
+            {
+              $project: {
+                lessonNotesCount: {
+                  $sum: {
+                    $map: {
+                      input: "$lessons",
+                      as: "lesson",
+                      in: { $size: { $ifNull: ["$$lesson.notes", []] } },
+                    },
+                  },
+                },
+                coursePDFsCount: { $size: { $ifNull: ["$coursePDFs", []] } },
+              },
+            },
+            {
+              $group: {
+                _id: null,
+                total: {
+                  $sum: { $add: ["$lessonNotesCount", "$coursePDFsCount"] },
+                },
+              },
+            },
+          ]),
+          Course.aggregate([
+            { $match: { "category.slug": category.slug } },
+            {
+              $project: {
+                lessonVideosCount: {
+                  $sum: {
+                    $map: {
+                      input: "$lessons",
+                      as: "lesson",
+                      in: { $size: { $ifNull: ["$$lesson.videos", []] } },
+                    },
+                  },
+                },
+                courseVideosCount: {
+                  $size: { $ifNull: ["$courseVideos", []] },
+                },
+              },
+            },
+            {
+              $group: {
+                _id: null,
+                total: {
+                  $sum: {
+                    $add: ["$lessonVideosCount", "$courseVideosCount"],
+                  },
+                },
+              },
+            },
+          ]),
+        ]);
 
         return {
           ...category,
           statistics: {
-            courses: courseCount,
+            courses: category.courseCount,
             lessons: totalLessons[0]?.total || 0,
             notes: totalNotes[0]?.total || 0,
             videos: totalVideos[0]?.total || 0,
@@ -69,44 +117,16 @@ const GetCategories = async (req, res) => {
 // Get courses by category
 const GetCoursesByCategory = async (req, res) => {
   try {
-    const { categoryId } = req.params;
+    const { categorySlug } = req.params;
     const { page = 0, limit = 10 } = req.query;
-
-    if (!isValidObjectId(categoryId)) {
-      return res
-        .status(400)
-        .json(
-          GenRes(
-            400,
-            null,
-            { error: "Invalid category ID" },
-            "Invalid category ID"
-          )
-        );
-    }
 
     const pageNum = parseInt(page);
     const limitNum = Math.min(parseInt(limit), 50);
 
-    // Get category details
-    const category = await Category.findById(categoryId).lean();
-    if (!category) {
-      return res
-        .status(404)
-        .json(
-          GenRes(
-            404,
-            null,
-            { error: "Category not found" },
-            "Category not found"
-          )
-        );
-    }
-
     // Get courses with pagination
     const [courses, total] = await Promise.all([
       Course.find({
-        "category._id": categoryId,
+        "category.slug": categorySlug,
         isPublished: true,
       })
         .sort({ createdAt: -1 })
@@ -114,17 +134,65 @@ const GetCoursesByCategory = async (req, res) => {
         .limit(limitNum)
         .lean(),
       Course.countDocuments({
-        "category._id": categoryId,
+        "category.slug": categorySlug,
         isPublished: true,
       }),
     ]);
+
+    if (courses.length === 0) {
+      return res
+        .status(404)
+        .json(
+          GenRes(
+            404,
+            null,
+            { error: "No courses found" },
+            "No courses found for this category"
+          )
+        );
+    }
+
+    // Get category info from first course
+    const category = courses[0].category;
+
+    // Enrich courses with content statistics
+    const enrichedCourses = courses.map((course) => ({
+      ...course,
+      contentStatistics: {
+        totalLessons: course.lessons?.length || 0,
+        totalLessonVideos:
+          course.lessons?.reduce(
+            (sum, lesson) => sum + (lesson.videos?.length || 0),
+            0
+          ) || 0,
+        totalLessonNotes:
+          course.lessons?.reduce(
+            (sum, lesson) => sum + (lesson.notes?.length || 0),
+            0
+          ) || 0,
+        totalCourseVideos: course.courseVideos?.length || 0,
+        totalCoursePDFs: course.coursePDFs?.length || 0,
+        totalVideos:
+          (course.lessons?.reduce(
+            (sum, lesson) => sum + (lesson.videos?.length || 0),
+            0
+          ) || 0) + (course.courseVideos?.length || 0),
+        totalPDFs:
+          (course.lessons?.reduce(
+            (sum, lesson) => sum + (lesson.notes?.length || 0),
+            0
+          ) || 0) + (course.coursePDFs?.length || 0),
+        hasOverviewVideo: !!course.overviewVideo,
+        overviewVideoDuration: course.overviewVideoDuration || "00:00:00",
+      },
+    }));
 
     return res.status(200).json(
       GenRes(
         200,
         {
           category,
-          courses,
+          courses: enrichedCourses,
           pagination: {
             page: pageNum,
             limit: limitNum,
@@ -143,7 +211,7 @@ const GetCoursesByCategory = async (req, res) => {
   }
 };
 
-// Get course details with lessons
+// Get course details with lessons and all content
 const GetCourseDetails = async (req, res) => {
   try {
     const { courseId } = req.params;
@@ -171,21 +239,38 @@ const GetCourseDetails = async (req, res) => {
         ...course,
         contentStructure: {
           totalLessons: course.lessons?.length || 0,
-          totalNotes:
-            course.lessons?.reduce(
-              (sum, lesson) => sum + (lesson.notes?.length || 0),
-              0
-            ) || 0,
-          totalVideos:
+          totalLessonVideos:
             course.lessons?.reduce(
               (sum, lesson) => sum + (lesson.videos?.length || 0),
               0
             ) || 0,
+          totalLessonNotes:
+            course.lessons?.reduce(
+              (sum, lesson) => sum + (lesson.notes?.length || 0),
+              0
+            ) || 0,
+          totalCourseVideos: course.courseVideos?.length || 0,
+          totalCoursePDFs: course.coursePDFs?.length || 0,
+          totalVideos:
+            (course.lessons?.reduce(
+              (sum, lesson) => sum + (lesson.videos?.length || 0),
+              0
+            ) || 0) + (course.courseVideos?.length || 0),
+          totalPDFs:
+            (course.lessons?.reduce(
+              (sum, lesson) => sum + (lesson.notes?.length || 0),
+              0
+            ) || 0) + (course.coursePDFs?.length || 0),
+          hasOverviewVideo: !!course.overviewVideo,
+          overviewVideoDuration: course.overviewVideoDuration || "00:00:00",
         },
       },
       lessons: course.lessons || [],
+      courseVideos: course.courseVideos || [], 
+      coursePDFs: course.coursePDFs || [],
     };
 
+    // If lessonId is provided, return only that lesson's content
     if (lessonId) {
       if (!isValidObjectId(lessonId)) {
         return res
@@ -209,9 +294,24 @@ const GetCourseDetails = async (req, res) => {
           );
       }
 
-      responseData.selectedLesson = lesson;
-      responseData.notes = lesson.notes || [];
-      responseData.videos = lesson.videos || [];
+      // Return only the selected lesson's content
+      responseData = {
+        course: {
+          _id: course._id,
+          title: course.title,
+          description: course.description,
+          thumbnail: course.thumbnail,
+          category: course.category,
+          instructor: course.instructor,
+        },
+        selectedLesson: lesson,
+        lessonNotes: lesson.notes || [],
+        lessonVideos: lesson.videos || [],
+
+        courseVideos: [],
+        coursePDFs: [],
+        lessons: course.lessons || [],
+      };
     }
 
     return res

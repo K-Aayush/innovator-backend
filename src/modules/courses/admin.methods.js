@@ -1,13 +1,14 @@
 const Course = require("./courses.model");
+const Category = require("./category.model");
 const GenRes = require("../../utils/routers/GenRes");
-const { isValidObjectId, Types } = require("mongoose");
+const { isValidObjectId } = require("mongoose");
 const VideoDurationExtractor = require("../../utils/media/videoDurationExtractor");
 const path = require("path");
 const fs = require("fs");
 
 // ==================== CATEGORY MANAGEMENT ====================
 
-// Create Category (embedded in course system)
+// Create Category
 const CreateCategory = async (req, res) => {
   try {
     if (req.user.role !== "admin") {
@@ -43,8 +44,7 @@ const CreateCategory = async (req, res) => {
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/(^-|-$)/g, "");
 
-    // Check if category already exists in any course
-    const existingCategory = await Course.findOne({ "category.slug": slug });
+    const existingCategory = await Category.findOne({ slug });
     if (existingCategory) {
       return res
         .status(409)
@@ -59,61 +59,173 @@ const CreateCategory = async (req, res) => {
     }
 
     const categoryData = {
-      _id: new Types.ObjectId().toString(),
       name,
       description,
       icon,
       color: color || "#4A90E2",
       slug,
+      createdBy: {
+        _id: req.user._id,
+        email: req.user.email,
+        name: req.user.name || req.user.email,
+      },
     };
+
+    const newCategory = new Category(categoryData);
+    await newCategory.save();
 
     return res
       .status(201)
-      .json(
-        GenRes(
-          201,
-          categoryData,
-          null,
-          "Category template created successfully"
-        )
-      );
+      .json(GenRes(201, newCategory, null, "Category created successfully"));
   } catch (error) {
     console.error("Error creating category:", error);
     return res.status(500).json(GenRes(500, null, error, error?.message));
   }
 };
 
-// Get all categories (from existing courses)
-const GetCategories = async (req, res) => {
+// Update Category
+const UpdateCategory = async (req, res) => {
   try {
-    const categories = await Course.aggregate([
-      {
-        $group: {
-          _id: "$category.slug",
-          name: { $first: "$category.name" },
-          description: { $first: "$category.description" },
-          icon: { $first: "$category.icon" },
-          color: { $first: "$category.color" },
-          slug: { $first: "$category.slug" },
-          courseCount: { $sum: 1 },
-          totalEnrollments: { $sum: "$enrollmentCount" },
-        },
-      },
-      { $sort: { name: 1 } },
-    ]);
+    if (req.user.role !== "admin") {
+      return res
+        .status(403)
+        .json(
+          GenRes(
+            403,
+            null,
+            { error: "Not authorized" },
+            "Only admins can update categories"
+          )
+        );
+    }
+
+    const { categoryId } = req.params;
+    const updateData = req.body;
+
+    if (!isValidObjectId(categoryId)) {
+      return res
+        .status(400)
+        .json(
+          GenRes(
+            400,
+            null,
+            { error: "Invalid category ID" },
+            "Invalid category ID"
+          )
+        );
+    }
+
+    delete updateData._id;
+    delete updateData.createdBy;
+    delete updateData.statistics;
+
+    const updatedCategory = await Category.findByIdAndUpdate(
+      categoryId,
+      { $set: updateData },
+      { new: true, runValidators: true }
+    );
+
+    if (!updatedCategory) {
+      return res
+        .status(404)
+        .json(
+          GenRes(
+            404,
+            null,
+            { error: "Category not found" },
+            "Category not found"
+          )
+        );
+    }
 
     return res
       .status(200)
-      .json(GenRes(200, categories, null, "Categories retrieved successfully"));
+      .json(
+        GenRes(200, updatedCategory, null, "Category updated successfully")
+      );
   } catch (error) {
-    console.error("Error getting categories:", error);
+    console.error("Error updating category:", error);
+    return res.status(500).json(GenRes(500, null, error, error?.message));
+  }
+};
+
+// Delete Category
+const DeleteCategory = async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res
+        .status(403)
+        .json(
+          GenRes(
+            403,
+            null,
+            { error: "Not authorized" },
+            "Only admins can delete categories"
+          )
+        );
+    }
+
+    const { categoryId } = req.params;
+
+    if (!isValidObjectId(categoryId)) {
+      return res
+        .status(400)
+        .json(
+          GenRes(
+            400,
+            null,
+            { error: "Invalid category ID" },
+            "Invalid category ID"
+          )
+        );
+    }
+
+    const category = await Category.findById(categoryId);
+    if (!category) {
+      return res
+        .status(404)
+        .json(
+          GenRes(
+            404,
+            null,
+            { error: "Category not found" },
+            "Category not found"
+          )
+        );
+    }
+
+    // Check if category has courses
+    const courseCount = await Course.countDocuments({
+      categoryId: categoryId,
+    });
+
+    if (courseCount > 0) {
+      return res
+        .status(400)
+        .json(
+          GenRes(
+            400,
+            null,
+            { error: "Category has courses" },
+            "Cannot delete category that contains courses"
+          )
+        );
+    }
+
+    await Category.findByIdAndDelete(categoryId);
+
+    return res
+      .status(200)
+      .json(GenRes(200, null, null, "Category deleted successfully"));
+  } catch (error) {
+    console.error("Error deleting category:", error);
     return res.status(500).json(GenRes(500, null, error, error?.message));
   }
 };
 
 // ==================== COURSE MANAGEMENT ====================
 
-// Create Course
+// Create Course (Udemy-like)
 const CreateCourse = async (req, res) => {
   try {
     if (req.user.role !== "admin") {
@@ -134,16 +246,16 @@ const CreateCourse = async (req, res) => {
     const thumbnailFile = files.find((f) => f.includes("thumbnail"));
     const overviewVideoFile = files.find((f) => f.includes("overviewVideo"));
 
-    // Validate required fields
-    if (!data.title || !data.description) {
+    // Validate required category
+    if (!data.categoryId || !isValidObjectId(data.categoryId)) {
       return res
         .status(400)
         .json(
           GenRes(
             400,
             null,
-            { error: "Title and description are required" },
-            "Please provide course title and description"
+            { error: "Valid category ID is required" },
+            "Please select a valid category"
           )
         );
     }
@@ -157,6 +269,21 @@ const CreateCourse = async (req, res) => {
             null,
             { error: "Course thumbnail is required" },
             "Please upload a course thumbnail"
+          )
+        );
+    }
+
+    // Validate category exists
+    const category = await Category.findById(data.categoryId);
+    if (!category) {
+      return res
+        .status(404)
+        .json(
+          GenRes(
+            404,
+            null,
+            { error: "Category not found" },
+            "Selected category not found"
           )
         );
     }
@@ -183,25 +310,12 @@ const CreateCourse = async (req, res) => {
       }
     }
 
-    // Create category structure
-    const categoryData = {
-      _id: new Types.ObjectId().toString(),
-      name: data.categoryName || "General",
-      description: data.categoryDescription || "",
-      icon: data.categoryIcon || "📚",
-      color: data.categoryColor || "#4A90E2",
-      slug: (data.categoryName || "general")
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, "-")
-        .replace(/(^-|-$)/g, ""),
-    };
-
     const courseData = {
       ...data,
       thumbnail: thumbnailFile,
       overviewVideo: overviewVideoFile || data.overviewVideo,
       overviewVideoDuration,
-      category: categoryData,
+      categoryId: category._id,
       author: {
         email: req.user.email,
         phone: req.user.phone || "Not provided",
@@ -218,6 +332,9 @@ const CreateCourse = async (req, res) => {
 
     const newCourse = new Course(courseData);
     await newCourse.save();
+
+    // Update category metadata
+    await updateCategoryMetadata(category._id);
 
     return res
       .status(200)
@@ -325,24 +442,6 @@ const UpdateCourse = async (req, res) => {
       }
     }
 
-    // Update category if provided
-    if (data.categoryName) {
-      data.category = {
-        name: data.categoryName,
-        description: data.categoryDescription || course.category.description,
-        icon: data.categoryIcon || course.category.icon,
-        color: data.categoryColor || course.category.color,
-        slug: data.categoryName
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, "-")
-          .replace(/(^-|-$)/g, ""),
-      };
-      delete data.categoryName;
-      delete data.categoryDescription;
-      delete data.categoryIcon;
-      delete data.categoryColor;
-    }
-
     const updatedCourse = await Course.findByIdAndUpdate(
       courseId,
       { $set: data },
@@ -393,6 +492,8 @@ const DeleteCourse = async (req, res) => {
         );
     }
 
+    const categoryId = course.category._id;
+
     // Delete associated files
     const allFiles = [course.thumbnail, course.overviewVideo].filter(Boolean);
 
@@ -405,16 +506,6 @@ const DeleteCourse = async (req, res) => {
         if (video.videoUrl) allFiles.push(video.videoUrl);
         if (video.thumbnail) allFiles.push(video.thumbnail);
       });
-    });
-
-    // Add course-level files
-    course.courseVideos?.forEach((video) => {
-      if (video.videoUrl) allFiles.push(video.videoUrl);
-      if (video.thumbnail) allFiles.push(video.thumbnail);
-    });
-
-    course.coursePDFs?.forEach((pdf) => {
-      if (pdf.fileUrl) allFiles.push(pdf.fileUrl);
     });
 
     if (allFiles.length > 0) {
@@ -434,6 +525,9 @@ const DeleteCourse = async (req, res) => {
     }
 
     await Course.findByIdAndDelete(courseId);
+
+    // Update category metadata
+    await updateCategoryMetadata(course.categoryId);
 
     return res
       .status(200)
@@ -1414,9 +1508,47 @@ const AddCoursePDF = async (req, res) => {
   }
 };
 
+// Helper function to update category metadata
+async function updateCategoryMetadata(categoryId) {
+  try {
+    const courses = await Course.find({
+      categoryId: categoryId,
+    });
+
+    let totalCourses = courses.length;
+    let totalLessons = 0;
+    let totalNotes = 0;
+    let totalVideos = 0;
+
+    courses.forEach((course) => {
+      totalLessons += course.lessons?.length || 0;
+      course.lessons?.forEach((lesson) => {
+        totalNotes += lesson.notes?.length || 0;
+        totalVideos += lesson.videos?.length || 0;
+      });
+      // Add course-level content
+      totalNotes += course.coursePDFs?.length || 0;
+      totalVideos += course.courseVideos?.length || 0;
+    });
+
+    await Category.findByIdAndUpdate(categoryId, {
+      $set: {
+        "statistics.totalCourses": totalCourses,
+        "statistics.totalLessons": totalLessons,
+        "statistics.totalNotes": totalNotes,
+        "statistics.totalVideos": totalVideos,
+        "statistics.lastUpdated": new Date(),
+      },
+    });
+  } catch (error) {
+    console.error("Error updating category metadata:", error);
+  }
+}
+
 module.exports = {
   CreateCategory,
-  GetCategories,
+  UpdateCategory,
+  DeleteCategory,
   CreateCourse,
   UpdateCourse,
   DeleteCourse,

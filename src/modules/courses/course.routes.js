@@ -11,7 +11,8 @@ const {
 
 const {
   CreateCategory,
-  GetCategories: GetAdminCategories,
+  UpdateCategory,
+  DeleteCategory,
   CreateCourse,
   UpdateCourse,
   DeleteCourse,
@@ -30,21 +31,22 @@ const {
 // Get all categories
 router.get("/categories", GetCategories);
 
-// Get courses by category slug
-router.get("/categories/:categorySlug/courses", GetCoursesByCategory);
+// Get courses by category
+router.get("/category/:categoryId/courses", GetCoursesByCategory);
 
 // Get course details with lessons
-// Without lessonId: shows entire course with all content
-// With lessonId: shows only that lesson's videos/notes
 router.get("/courses/:courseId", basicMiddleware, GetCourseDetails);
 
 // ==================== ADMIN CATEGORY MANAGEMENT ====================
 
-// Create category template
+// Create category
 router.post("/admin/categories", basicMiddleware, CreateCategory);
 
-// Get categories for admin
-router.get("/admin/categories", basicMiddleware, GetAdminCategories);
+// Update category
+router.put("/admin/categories/:categoryId", basicMiddleware, UpdateCategory);
+
+// Delete category
+router.delete("/admin/categories/:categoryId", basicMiddleware, DeleteCategory);
 
 // ==================== ADMIN COURSE MANAGEMENT ====================
 
@@ -115,7 +117,7 @@ router.delete(
   DeleteLessonContent
 );
 
-// ==================== COURSE CONTENT MANAGEMENT (Not lesson-specific) ====================
+// ==================== COURSE CONTENT MANAGEMENT ====================
 
 // Add video directly to course (not lesson-specific)
 router.post(

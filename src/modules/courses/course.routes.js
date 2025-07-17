@@ -98,7 +98,7 @@ router.delete(
 router.post(
   "/admin/courses/:courseId/lessons/:lessonId/content",
   basicMiddleware,
-  AdminFiles("private").any(),
+  AdminFiles("public").any(),
   AddLessonContent
 );
 
@@ -106,7 +106,7 @@ router.post(
 router.put(
   "/admin/courses/:courseId/lessons/:lessonId/content/:contentId",
   basicMiddleware,
-  AdminFiles("private").any(),
+  AdminFiles("public").any(),
   UpdateLessonContent
 );
 
@@ -123,7 +123,7 @@ router.delete(
 router.post(
   "/admin/courses/:courseId/videos",
   basicMiddleware,
-  AdminFiles("private").fields([
+  AdminFiles("public").fields([
     { name: "video", maxCount: 5 },
     { name: "thumbnail", maxCount: 5 },
   ]),
@@ -134,7 +134,7 @@ router.post(
 router.post(
   "/admin/courses/:courseId/pdfs",
   basicMiddleware,
-  AdminFiles("private").any(),
+  AdminFiles("public").any(),
   AddCoursePDF
 );
 

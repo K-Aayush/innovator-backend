@@ -107,11 +107,10 @@ const CourseSchema = new Schema(
       default: "00:00:00",
     },
 
-    // Single category like Udemy
-    category: {
-      _id: gen.required(String),
-      name: gen.required(String),
-      slug: String,
+    categoryId: {
+      type: Schema.Types.ObjectId,
+      ref: "Category",
+      required: true,
     },
 
     lessons: [LessonSchema],
@@ -313,11 +312,11 @@ CourseSchema.pre("save", function (next) {
 
 // Index for better performance
 CourseSchema.index({
-  "category._id": 1,
+  categoryId: 1,
   isPublished: 1,
 });
 CourseSchema.index({ title: "text", description: "text" });
-CourseSchema.index({ level: 1, "category._id": 1 });
+CourseSchema.index({ level: 1, categoryId: 1 });
 CourseSchema.index({ "author._id": 1 });
 
 const Course = models?.Course || model("Course", CourseSchema);
